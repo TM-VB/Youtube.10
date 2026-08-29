@@ -1,0 +1,6 @@
+{
+  "name": "Download Videos",
+  "description": "YouTube and multimedia downloader application for Android built with Jetpack Compose.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
