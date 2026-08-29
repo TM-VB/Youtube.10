@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
@@ -93,6 +94,9 @@ import kotlinx.coroutines.isActive
 import java.io.File
 import java.util.Locale
 
+private const val TAG_PLAYER = "PLAYER_DEBUG"
+private const val TAG_MEDIA_FILE = "MEDIA_FILE_DEBUG"
+
 /**
  * Production-ready in-app media player dialog powered by AndroidX Media3 ExoPlayer.
  *
@@ -115,7 +119,7 @@ fun InAppMediaPlayerDialog(
 
     // Resolve media URI safely: prefer contentUri first, then absolute file path
     val mediaUri = remember(contentUri, mediaPath) {
-        when {
+        val resolved = when {
             !contentUri.isNullOrBlank() -> Uri.parse(contentUri)
             !mediaPath.isNullOrBlank() -> {
                 if (mediaPath.startsWith("content://") || mediaPath.startsWith("file://")) {
@@ -127,6 +131,30 @@ fun InAppMediaPlayerDialog(
             }
             else -> null
         }
+
+        // Diagnostic File & Content URI logging
+        val existsCheck = when {
+            resolved == null -> "null"
+            resolved.scheme == "content" -> {
+                try {
+                    context.contentResolver.openFileDescriptor(resolved, "r")?.use { "accessible (size=${it.statSize})" }
+                        ?: "cannot open pfd"
+                } catch (e: Exception) {
+                    "content access error: ${e.message}"
+                }
+            }
+            resolved.scheme == "file" -> {
+                val f = File(resolved.path ?: "")
+                if (f.exists()) "file exists (size=${f.length()})" else "file missing"
+            }
+            else -> "unknown scheme"
+        }
+
+        Log.d(
+            TAG_MEDIA_FILE,
+            "contentUri=$contentUri, mediaPath=$mediaPath, resolvedUri=$resolved, access=$existsCheck"
+        )
+        resolved
     }
 
     // Persist playback position across recompositions and screen state changes for this specific URI
@@ -149,13 +177,18 @@ fun InAppMediaPlayerDialog(
                         seekTo(savedPositionMs)
                     }
                     playWhenReady = true
+                    Log.d(TAG_PLAYER, "ExoPlayer initialized for URI: $mediaUri with savedPosition=$savedPositionMs")
                 }
-        } else null
+        } else {
+            Log.e(TAG_PLAYER, "Cannot initialize ExoPlayer: mediaUri is null")
+            null
+        }
     }
 
     // Release player strictly when this Dialog leaves the composition hierarchy
     DisposableEffect(exoPlayer) {
         onDispose {
+            Log.d(TAG_PLAYER, "Releasing ExoPlayer on dialog dispose")
             exoPlayer?.release()
         }
     }
@@ -166,6 +199,7 @@ fun InAppMediaPlayerDialog(
     var currentPosition by remember { mutableLongStateOf(savedPositionMs) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var isDurationReady by remember { mutableStateOf(false) }
+    var isSeekable by remember { mutableStateOf(false) }
     var videoAspectRatio by remember { mutableFloatStateOf(16f / 9f) }
     var errorMessage by remember { mutableStateOf<String?>(if (exoPlayer == null) "Could not load media source" else null) }
 
@@ -188,6 +222,7 @@ fun InAppMediaPlayerDialog(
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                Log.d(TAG_PLAYER, "onIsPlayingChanged: playing=$playing, position=${exoPlayer.currentPosition}")
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -197,6 +232,11 @@ fun InAppMediaPlayerDialog(
                     durationMs = dur
                     isDurationReady = true
                 }
+                isSeekable = exoPlayer.isCurrentMediaItemSeekable
+                Log.d(
+                    TAG_PLAYER,
+                    "onPlaybackStateChanged: state=$state, duration=$dur, isSeekable=$isSeekable, pos=${exoPlayer.currentPosition}"
+                )
             }
 
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -205,6 +245,11 @@ fun InAppMediaPlayerDialog(
                     durationMs = dur
                     isDurationReady = true
                 }
+                isSeekable = exoPlayer.isCurrentMediaItemSeekable
+                Log.d(
+                    TAG_PLAYER,
+                    "onTimelineChanged: windows=${timeline.windowCount}, duration=$dur, isSeekable=$isSeekable"
+                )
             }
 
             override fun onEvents(player: Player, events: Player.Events) {
@@ -215,6 +260,7 @@ fun InAppMediaPlayerDialog(
                     durationMs = dur
                     isDurationReady = true
                 }
+                isSeekable = player.isCurrentMediaItemSeekable
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -225,6 +271,7 @@ fun InAppMediaPlayerDialog(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG_PLAYER, "ExoPlayer error: ${error.errorCodeName} - ${error.message}", error)
                 errorMessage = error.message ?: "Playback error occurred"
             }
         }
@@ -239,6 +286,7 @@ fun InAppMediaPlayerDialog(
             durationMs = dur
             isDurationReady = true
         }
+        isSeekable = exoPlayer.isCurrentMediaItemSeekable
 
         onDispose {
             exoPlayer.removeListener(listener)
@@ -259,6 +307,7 @@ fun InAppMediaPlayerDialog(
                     durationMs = dur
                     isDurationReady = true
                 }
+                isSeekable = player.isCurrentMediaItemSeekable
                 isPlaying = player.isPlaying
                 playbackState = player.playbackState
             }
@@ -283,14 +332,21 @@ fun InAppMediaPlayerDialog(
     fun togglePlayPause() {
         triggerInteraction()
         exoPlayer?.let { player ->
-            if (player.playbackState == Player.STATE_ENDED) {
-                player.seekTo(0L)
-                savedPositionMs = 0L
-                player.play()
-            } else if (player.isPlaying) {
-                player.pause()
-            } else {
-                player.play()
+            when {
+                player.playbackState == Player.STATE_ENDED -> {
+                    Log.d(TAG_PLAYER, "REPLAY from end -> seekTo(0)")
+                    player.seekTo(0L)
+                    savedPositionMs = 0L
+                    player.play()
+                }
+                player.isPlaying -> {
+                    Log.d(TAG_PLAYER, "PAUSE position=${player.currentPosition}")
+                    player.pause()
+                }
+                else -> {
+                    Log.d(TAG_PLAYER, "PLAY position=${player.currentPosition}")
+                    player.play()
+                }
             }
         }
     }
@@ -301,6 +357,7 @@ fun InAppMediaPlayerDialog(
             val cur = player.currentPosition
             val maxDur = if (durationMs > 0L) durationMs else if (player.duration > 0L && player.duration != C.TIME_UNSET) player.duration else Long.MAX_VALUE
             val target = (cur + offsetMs).coerceIn(0L, maxDur)
+            Log.d(TAG_PLAYER, "SEEK relative offset=$offsetMs from=$cur to=$target")
             player.seekTo(target)
             currentPosition = target
             savedPositionMs = target
@@ -708,7 +765,7 @@ fun InAppMediaPlayerDialog(
                         ) {
                             // Timeline Progress Slider
                             val effectivePosition = if (isSeeking) {
-                                (seekPreviewFraction * (if (durationMs > 0L) durationMs else 1L)).toLong()
+                                if (durationMs > 0L) (seekPreviewFraction * durationMs).toLong().coerceIn(0L, durationMs) else 0L
                             } else {
                                 currentPosition
                             }
@@ -727,8 +784,9 @@ fun InAppMediaPlayerDialog(
                                     seekPreviewFraction = frac
                                 },
                                 onValueChangeFinished = {
-                                    if (durationMs > 0L) {
+                                    if (durationMs > 0L && isSeekable) {
                                         val targetMs = (seekPreviewFraction * durationMs).toLong().coerceIn(0L, durationMs)
+                                        Log.d(TAG_PLAYER, "SEEK from=${exoPlayer?.currentPosition} to=$targetMs")
                                         exoPlayer?.seekTo(targetMs)
                                         currentPosition = targetMs
                                         savedPositionMs = targetMs
@@ -736,7 +794,7 @@ fun InAppMediaPlayerDialog(
                                     isSeeking = false
                                     triggerInteraction()
                                 },
-                                enabled = isDurationReady && durationMs > 0L,
+                                enabled = isDurationReady && durationMs > 0L && isSeekable,
                                 colors = SliderDefaults.colors(
                                     thumbColor = MaterialTheme.colorScheme.primary,
                                     activeTrackColor = MaterialTheme.colorScheme.primary,

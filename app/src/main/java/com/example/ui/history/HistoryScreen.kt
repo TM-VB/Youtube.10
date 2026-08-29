@@ -434,12 +434,14 @@ fun HistoryScreen(
 
     // In-App Media Player Dialog
     taskToPlay?.let { task ->
-        com.example.ui.components.InAppMediaPlayerDialog(
-            title = task.title,
-            mediaPath = task.filePath,
-            contentUri = task.contentUri,
-            onDismiss = { taskToPlay = null }
-        )
+        androidx.compose.runtime.key(task.id) {
+            com.example.ui.components.InAppMediaPlayerDialog(
+                title = task.title,
+                mediaPath = task.filePath,
+                contentUri = task.contentUri,
+                onDismiss = { taskToPlay = null }
+            )
+        }
     }
 }
 

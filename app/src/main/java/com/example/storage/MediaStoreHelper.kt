@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import com.example.domain.util.FileNameSanitizer
@@ -16,6 +17,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 
 object MediaStoreHelper {
+
+    private const val TAG = "MEDIASTORE_DEBUG"
 
     fun getTempDownloadDir(context: Context): File {
         val dir = File(context.cacheDir, "ytdlp_downloads")
@@ -89,9 +92,10 @@ object MediaStoreHelper {
                 val uri = context.contentResolver.insert(collectionUri, values)
 
                 if (uri != null) {
+                    var bytesWritten = 0L
                     context.contentResolver.openOutputStream(uri)?.use { out ->
                         FileInputStream(sourceFile).use { input ->
-                            input.copyTo(out, bufferSize = 64 * 1024)
+                            bytesWritten = input.copyTo(out, bufferSize = 64 * 1024)
                             out.flush()
                         }
                     }
@@ -102,6 +106,7 @@ object MediaStoreHelper {
                     context.contentResolver.update(uri, values, null, null)
 
                     val publicPath = "${Environment.getExternalStoragePublicDirectory(targetDir)}/DownloadVideos/$displayName"
+                    Log.d(TAG, "Saved to MediaStore: uri=$uri, sourceSize=${sourceFile.length()}, written=$bytesWritten, publicPath=$publicPath")
 
                     // Scan file with MediaScanner to guarantee Gallery / Photos thumbnail generation
                     try {
