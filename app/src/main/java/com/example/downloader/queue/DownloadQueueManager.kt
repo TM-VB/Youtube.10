@@ -140,6 +140,8 @@ class DownloadQueueManager(
             progress = 0f,
             isAudioOnly = request.isAudioOnly,
             isVideoOnly = request.isVideoOnly,
+            downloadSubtitles = request.downloadSubtitles,
+            subtitleLanguage = request.subtitleLanguage,
             queueOrder = System.currentTimeMillis()
         )
 
@@ -158,7 +160,9 @@ class DownloadQueueManager(
         formatId: String,
         formatDescription: String,
         isAudioOnly: Boolean,
-        timeRange: TimeRange?
+        timeRange: TimeRange?,
+        downloadSubtitles: Boolean = false,
+        subtitleLanguage: String? = null
     ): String {
         val taskId = UUID.randomUUID().toString()
         val entity = DownloadTaskEntity(
@@ -175,6 +179,8 @@ class DownloadQueueManager(
             progress = 0f,
             isAudioOnly = isAudioOnly,
             isVideoOnly = false,
+            downloadSubtitles = downloadSubtitles,
+            subtitleLanguage = subtitleLanguage,
             queueOrder = System.currentTimeMillis()
         )
 
@@ -184,6 +190,35 @@ class DownloadQueueManager(
         }
 
         return taskId
+    }
+
+    fun enqueueBatch(requests: List<DownloadRequest>) {
+        if (requests.isEmpty()) return
+        scope.launch {
+            val now = System.currentTimeMillis()
+            val entities = requests.mapIndexed { idx, req ->
+                DownloadTaskEntity(
+                    id = req.id,
+                    url = req.url,
+                    title = req.title,
+                    thumbnailUrl = req.thumbnailUrl,
+                    formatId = req.formatSelector,
+                    formatDescription = req.formatDescription,
+                    startTime = req.startTime,
+                    endTime = req.endTime,
+                    cutMode = req.cutMode.id,
+                    status = DownloadStatus.QUEUED,
+                    progress = 0f,
+                    isAudioOnly = req.isAudioOnly,
+                    isVideoOnly = req.isVideoOnly,
+                    downloadSubtitles = req.downloadSubtitles,
+                    subtitleLanguage = req.subtitleLanguage,
+                    queueOrder = now + idx
+                )
+            }
+            entities.forEach { repository.insertTask(it) }
+            processQueue()
+        }
     }
 
     fun pauseDownload(taskId: String) {

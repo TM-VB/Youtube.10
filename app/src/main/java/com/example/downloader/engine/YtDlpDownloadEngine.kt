@@ -185,6 +185,27 @@ class YtDlpDownloadEngine(
             }
         } catch (_: Throwable) {}
 
+        // Apply Cookies if configured
+        try {
+            val cookiesContent = com.example.data.settings.AppSettings.getInstance(context).cookiesContent.value
+            if (cookiesContent.isNotBlank()) {
+                val cookiesFile = File(context.cacheDir, "yt_cookies.txt")
+                cookiesFile.writeText(cookiesContent)
+                req.addOption("--cookies", cookiesFile.absolutePath)
+            }
+        } catch (_: Throwable) {}
+
+        // Subtitles handling
+        if (request.downloadSubtitles) {
+            req.addOption("--write-subs")
+            req.addOption("--write-auto-subs")
+            val lang = request.subtitleLanguage?.ifBlank { "ar,en" } ?: "ar,en"
+            req.addOption("--sub-lang", lang)
+            if (!request.isAudioOnly) {
+                req.addOption("--embed-subs")
+            }
+        }
+
         // Format selection
         val formatSelector = request.resolveFormatSelector()
         if (request.isAudioOnly) {

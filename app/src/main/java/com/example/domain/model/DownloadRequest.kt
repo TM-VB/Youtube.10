@@ -19,7 +19,9 @@ data class DownloadRequest(
     val isVideoOnly: Boolean = false,
     val title: String = "Video",
     val thumbnailUrl: String? = null,
-    val formatDescription: String = "Best Quality"
+    val formatDescription: String = "Best Quality",
+    val downloadSubtitles: Boolean = false,
+    val subtitleLanguage: String? = null
 ) {
     val isFullVideo: Boolean
         get() = startTime.isNullOrBlank() || endTime.isNullOrBlank()

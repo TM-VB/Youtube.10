@@ -407,6 +407,19 @@ fun HomeScreen(
                 }
             }
 
+            // Ready Playlist View
+            if (uiState is HomeUiState.PlaylistReady) {
+                val playlistState = uiState as HomeUiState.PlaylistReady
+                item {
+                    PlaylistDetailsView(
+                        state = playlistState,
+                        viewModel = viewModel,
+                        onReset = { viewModel.resetAnalysis() },
+                        onNavigateToDownloads = onNavigateToDownloads
+                    )
+                }
+            }
+
             // Recent Downloads Section (Shown when in Idle or Error state)
             if (uiState !is HomeUiState.Ready) {
                 item {

@@ -30,6 +30,10 @@ data class SettingsUiState(
     val showNotifications: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val languageCode: String = "system",
+    val cookiesContent: String = "",
+    val autoUpdateYtDlp: Boolean = true,
+    val defaultSubtitles: Boolean = false,
+    val defaultSubtitleLang: String = "ar",
     val cacheSize: String = "0 B",
     val statusMessage: String? = null
 )
@@ -49,45 +53,54 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _showLogsDialog = MutableStateFlow(false)
     val showLogsDialog: StateFlow<Boolean> = _showLogsDialog.asStateFlow()
 
+    private val _showCookiesDialog = MutableStateFlow(false)
+    val showCookiesDialog: StateFlow<Boolean> = _showCookiesDialog.asStateFlow()
+
     private val _recentLogs = MutableStateFlow<List<String>>(emptyList())
     val recentLogs: StateFlow<List<String>> = _recentLogs.asStateFlow()
 
-    private data class SettingsPrefs(
-        val concurrent: Int,
-        val retry: Boolean,
-        val notifs: Boolean,
-        val theme: ThemeMode,
-        val lang: String
-    )
-
-    private val downloadPrefsFlow = combine(
+    private val prefsFlow1 = combine(
         appSettings.concurrentDownloads,
         appSettings.autoRetry,
         appSettings.showNotifications,
-        appSettings.themeMode,
-        appSettings.languageCode
-    ) { concurrent, retry, notifs, theme, lang ->
-        SettingsPrefs(concurrent, retry, notifs, theme, lang)
+        appSettings.themeMode
+    ) { concurrent, retry, notifs, theme ->
+        listOf(concurrent, retry, notifs, theme)
+    }
+
+    private val prefsFlow2 = combine(
+        appSettings.languageCode,
+        appSettings.cookiesContent,
+        appSettings.autoCheckEngineUpdates,
+        appSettings.defaultSubtitles,
+        appSettings.defaultSubtitleLang
+    ) { lang, cookies, autoUpdate, defaultSubs, subLang ->
+        listOf(lang, cookies, autoUpdate, defaultSubs, subLang)
     }
 
     val uiState: StateFlow<SettingsUiState> = combine(
-        downloadPrefsFlow,
+        prefsFlow1,
+        prefsFlow2,
         _cacheSize,
         _statusMessage,
-        _ytDlpVersion,
-        _isUpdating
-    ) { prefs, cache, message, version, updating ->
+        combine(_ytDlpVersion, _isUpdating) { v, u -> Pair(v, u) }
+    ) { p1, p2, cache, message, enginePair ->
+        val (version, updating) = enginePair
         SettingsUiState(
             pythonStatus = container.pythonRuntimeManager.getStatus(),
             ffmpegStatus = container.ffmpegManager.getStatus(),
             ytDlpVersion = version,
             isUpdatingYtDlp = updating,
             primaryAbi = container.ffmpegManager.primaryAbi,
-            concurrentDownloads = prefs.concurrent,
-            autoRetry = prefs.retry,
-            showNotifications = prefs.notifs,
-            themeMode = prefs.theme,
-            languageCode = prefs.lang,
+            concurrentDownloads = p1[0] as Int,
+            autoRetry = p1[1] as Boolean,
+            showNotifications = p1[2] as Boolean,
+            themeMode = p1[3] as ThemeMode,
+            languageCode = p2[0] as String,
+            cookiesContent = p2[1] as String,
+            autoUpdateYtDlp = p2[2] as Boolean,
+            defaultSubtitles = p2[3] as Boolean,
+            defaultSubtitleLang = p2[4] as String,
             cacheSize = cache,
             statusMessage = message
         )
@@ -114,7 +127,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     _statusMessage.value = "yt-dlp update result: $status"
                 },
                 onFailure = { e ->
-                    _statusMessage.value = "yt-dlp update status: Already up to date (${e.message ?: "Current"})"
+                    _statusMessage.value = "yt-dlp status: Up to date or (${e.message ?: "Current"})"
                 }
             )
             _isUpdating.value = false
@@ -139,6 +152,32 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setLanguageCode(code: String) {
         appSettings.setLanguageCode(code)
+    }
+
+    fun setAutoUpdateYtDlp(enabled: Boolean) {
+        appSettings.setAutoCheckEngineUpdates(enabled)
+    }
+
+    fun setDefaultSubtitles(enabled: Boolean) {
+        appSettings.setDefaultSubtitles(enabled)
+    }
+
+    fun setDefaultSubtitleLang(lang: String) {
+        appSettings.setDefaultSubtitleLang(lang)
+    }
+
+    fun saveCookies(content: String) {
+        appSettings.setCookiesContent(content)
+        _statusMessage.value = if (content.isNotBlank()) "Cookies saved successfully" else "Cookies cleared"
+        _showCookiesDialog.value = false
+    }
+
+    fun openCookiesDialog() {
+        _showCookiesDialog.value = true
+    }
+
+    fun closeCookiesDialog() {
+        _showCookiesDialog.value = false
     }
 
     fun refreshStatus() {

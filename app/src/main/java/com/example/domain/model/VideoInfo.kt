@@ -15,7 +15,8 @@ data class VideoInfo(
     val description: String? = null,
     val extractor: String? = null,
     val availability: String? = null,
-    val formats: List<FormatInfo> = emptyList()
+    val formats: List<FormatInfo> = emptyList(),
+    val subtitles: List<SubtitleTrack> = emptyList()
 ) {
     val formattedDuration: String
         get() {

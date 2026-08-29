@@ -171,4 +171,49 @@
     <string name="player_exit_fullscreen">Exit Fullscreen</string>
     <string name="player_loop">Repeat</string>
     <string name="player_error">Unable to play video. The file may be corrupt or unavailable.</string>
+
+    <!-- Playlists -->
+    <string name="playlist_detected">Playlist Detected</string>
+    <string name="playlist_total_videos">Total Videos</string>
+    <string name="playlist_select_all">Select All</string>
+    <string name="playlist_deselect_all">Deselect All</string>
+    <string name="playlist_download_selected">Download Selected (%1$d)</string>
+    <string name="playlist_download_all">Download Entire Playlist</string>
+    <string name="playlist_preset_label">Batch Format Preset</string>
+    <string name="playlist_items_queued">%1$d videos added to download queue!</string>
+
+    <!-- Subtitles / CC -->
+    <string name="subtitles_section">Subtitles &amp; Captions (CC)</string>
+    <string name="subtitles_enable">Download / Embed Subtitles</string>
+    <string name="subtitles_enable_desc">Embed subtitles directly into the video file or save alongside</string>
+    <string name="subtitles_language">Subtitle Language</string>
+    <string name="subtitles_none">None / Off</string>
+    <string name="subtitles_auto">Auto / English</string>
+    <string name="subtitles_arabic">Arabic (العربية)</string>
+    <string name="subtitles_english">English</string>
+
+    <!-- Cookies & Authentication -->
+    <string name="settings_cookies_section">Cookies &amp; Authentication</string>
+    <string name="settings_cookies_title">Cookies File (cookies.txt)</string>
+    <string name="settings_cookies_desc">Bypass age restrictions, sign-in walls, or member-only videos by providing cookies from your browser.</string>
+    <string name="settings_cookies_status_active">Cookies Active (%1$d bytes)</string>
+    <string name="settings_cookies_status_none">No cookies configured</string>
+    <string name="settings_cookies_edit_btn">Configure Cookies</string>
+    <string name="cookies_dialog_title">Import / Edit Cookies</string>
+    <string name="cookies_dialog_hint">Paste Netscape-formatted cookies.txt content here...</string>
+    <string name="cookies_dialog_instructions">How to get cookies: Export cookies.txt from your browser using extensions like \'Get cookies.txt LOCALLY\' and paste the text content here.</string>
+    <string name="cookies_saved_success">Cookies saved successfully</string>
+    <string name="cookies_cleared_success">Cookies cleared</string>
+
+    <!-- Engine Auto Update -->
+    <string name="settings_auto_update_ytdlp">Auto-Check Updates on Startup</string>
+    <string name="settings_auto_update_ytdlp_desc">Automatically check and update yt-dlp to handle platform changes</string>
+    <string name="settings_default_subtitles">Default Subtitles</string>
+    <string name="settings_default_subtitles_desc">Enable subtitles automatically for newly analyzed videos</string>
+    <string name="cookies_active_status">Active (Configured)</string>
+    <string name="cookies_empty_status">No cookies configured</string>
+    <string name="btn_edit_cookies">Configure Cookies</string>
+    <string name="cookies_dialog_help">Paste Netscape-formatted cookies.txt content here to bypass sign-in walls, age restrictions, and private/member videos.</string>
+    <string name="btn_save_cookies">Save Cookies</string>
+    <string name="btn_clear_cookies">Clear Cookies</string>
 </resources>

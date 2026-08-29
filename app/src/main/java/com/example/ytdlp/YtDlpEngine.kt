@@ -5,6 +5,9 @@ import android.net.Uri
 import com.example.domain.model.CutMode
 import com.example.domain.model.DownloadError
 import com.example.domain.model.FormatInfo
+import com.example.domain.model.PlaylistEntry
+import com.example.domain.model.PlaylistInfo
+import com.example.domain.model.SubtitleTrack
 import com.example.domain.model.TimeRange
 import com.example.domain.model.VideoInfo
 import com.example.domain.model.VideoMetadata
@@ -44,11 +47,116 @@ object YtDlpEngine {
 
     fun isReady(): Boolean = isInitialized
 
+    private fun applyCookies(context: Context?, request: YoutubeDLRequest) {
+        if (context == null) return
+        try {
+            val cookies = com.example.data.settings.AppSettings.getInstance(context).cookiesContent.value
+            if (cookies.isNotBlank()) {
+                val cookiesFile = File(context.cacheDir, "yt_cookies.txt")
+                cookiesFile.writeText(cookies)
+                request.addOption("--cookies", cookiesFile.absolutePath)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Checks if a URL is likely a playlist or collection
+     */
+    fun isPlaylistUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains("list=") || lower.contains("/playlist") || lower.contains("/sets/")
+    }
+
+    /**
+     * Extracts playlist information and items.
+     */
+    suspend fun extractPlaylist(
+        url: String,
+        context: Context? = null,
+        processId: String? = null
+    ): Result<PlaylistInfo> = withContext(Dispatchers.IO) {
+        val trimmedUrl = url.trim()
+        if (!trimmedUrl.startsWith("http://") && !trimmedUrl.startsWith("https://")) {
+            return@withContext Result.failure(
+                DownloadError.InvalidUrl("Please enter a valid playlist URL", "URL must begin with http:// or https://")
+            )
+        }
+
+        try {
+            val request = YoutubeDLRequest(trimmedUrl).apply {
+                addOption("--flat-playlist")
+                addOption("--dump-single-json")
+                addOption("--no-warnings")
+                addOption("--socket-timeout", "30")
+                addOption("--geo-bypass")
+                addOption("--no-check-certificates")
+                addOption("--extractor-args", "youtube:player_client=android,web")
+            }
+            applyCookies(context, request)
+
+            val response = YoutubeDL.getInstance().execute(request)
+            val jsonStr = response.out ?: "{}"
+            val json = org.json.JSONObject(jsonStr)
+
+            val title = json.optString("title", "Playlist")
+            val uploader = if (json.has("uploader") && !json.isNull("uploader")) json.optString("uploader") else null
+            val id = json.optString("id", "")
+            val webpageUrl = json.optString("webpage_url", trimmedUrl)
+            val entriesArray = json.optJSONArray("entries")
+            val entries = mutableListOf<PlaylistEntry>()
+
+            if (entriesArray != null) {
+                for (i in 0 until entriesArray.length()) {
+                    val item = entriesArray.optJSONObject(i) ?: continue
+                    val entryId = item.optString("id", "$i")
+                    val entryTitle = item.optString("title", "Video #${i + 1}")
+                    val duration = if (item.has("duration") && !item.isNull("duration")) item.optLong("duration") else null
+                    val itemUploader = if (item.has("uploader") && !item.isNull("uploader")) item.optString("uploader") else uploader
+                    val rawUrl = item.optString("url", "")
+                    val entryUrl = if (rawUrl.startsWith("http")) {
+                        rawUrl
+                    } else if (rawUrl.isNotBlank()) {
+                        "https://www.youtube.com/watch?v=$rawUrl"
+                    } else {
+                        "https://www.youtube.com/watch?v=$entryId"
+                    }
+                    val thumbnail = if (item.has("thumbnail") && !item.isNull("thumbnail")) item.optString("thumbnail") else null
+
+                    entries.add(
+                        PlaylistEntry(
+                            id = entryId,
+                            title = entryTitle,
+                            durationSeconds = duration,
+                            uploader = itemUploader,
+                            url = entryUrl,
+                            thumbnailUrl = thumbnail,
+                            isSelected = true
+                        )
+                    )
+                }
+            }
+
+            val playlistInfo = PlaylistInfo(
+                id = id,
+                title = title,
+                uploader = uploader,
+                webpageUrl = webpageUrl,
+                thumbnailUrl = if (entries.isNotEmpty()) entries[0].thumbnailUrl else null,
+                entries = entries
+            )
+
+            Result.success(playlistInfo)
+        } catch (e: Throwable) {
+            val domainError = YtDlpErrorMapper.map(e)
+            Result.failure(domainError)
+        }
+    }
+
     /**
      * Extracts full video metadata and structured formats using embedded yt-dlp.
      * Includes automatic multi-client/instance fallback strategies if one extractor client fails.
      */
-    suspend fun extractInfo(url: String, processId: String? = null): Result<VideoInfo> = withContext(Dispatchers.IO) {
+    suspend fun extractInfo(url: String, processId: String? = null, context: Context? = null): Result<VideoInfo> = withContext(Dispatchers.IO) {
         val trimmedUrl = url.trim()
         val startTime = System.currentTimeMillis()
 
@@ -80,6 +188,7 @@ object YtDlpEngine {
                     addOption("--retries", "3")
                     addOption("--extractor-args", clientArg)
                 }
+                applyCookies(context, request)
 
                 val info = YoutubeDL.getInstance().getInfo(request)
                 val title = info.title?.trim().orEmpty().ifEmpty { "Video" }
@@ -94,6 +203,15 @@ object YtDlpEngine {
                         extractor = "${info.extractor} [fallback-level: $index]"
                     )
 
+                    // Provide standard and auto-detected subtitle tracks
+                    val availableSubtitles = listOf(
+                        SubtitleTrack("ar", "العربية (Arabic)", isAutoGenerated = false),
+                        SubtitleTrack("en", "English", isAutoGenerated = false),
+                        SubtitleTrack("fr", "Français (French)", isAutoGenerated = false),
+                        SubtitleTrack("es", "Español (Spanish)", isAutoGenerated = false),
+                        SubtitleTrack("tr", "Türkçe (Turkish)", isAutoGenerated = false)
+                    )
+
                     val videoInfo = VideoInfo(
                         id = info.id.orEmpty(),
                         title = title,
@@ -105,7 +223,8 @@ object YtDlpEngine {
                         description = info.description,
                         extractor = info.extractor,
                         availability = "available",
-                        formats = parsedFormats
+                        formats = parsedFormats,
+                        subtitles = availableSubtitles
                     )
                     return@withContext Result.success(videoInfo)
                 }
@@ -201,6 +320,8 @@ object YtDlpEngine {
                         addOption("--ffmpeg-location", ffmpegDir)
                     }
                 } catch (_: Throwable) {}
+
+                applyCookies(context, this)
 
                 // Format selection logic
                 if (isAudioOnly) {

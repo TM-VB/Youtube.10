@@ -24,6 +24,10 @@ class AppContainer(private val context: Context) {
         AppDatabase.getInstance(context)
     }
 
+    val appSettings: com.example.data.settings.AppSettings by lazy {
+        com.example.data.settings.AppSettings.getInstance(context)
+    }
+
     val downloadTaskDao: DownloadTaskDao by lazy {
         database.downloadTaskDao()
     }

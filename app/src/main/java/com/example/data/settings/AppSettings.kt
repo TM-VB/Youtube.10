@@ -45,6 +45,51 @@ class AppSettings private constructor(context: Context) {
     )
     val languageCode: StateFlow<String> = _languageCode.asStateFlow()
 
+    private val _cookiesContent = MutableStateFlow(
+        prefs.getString(KEY_COOKIES_CONTENT, "") ?: ""
+    )
+    val cookiesContent: StateFlow<String> = _cookiesContent.asStateFlow()
+
+    private val _autoCheckEngineUpdates = MutableStateFlow(
+        prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true)
+    )
+    val autoCheckEngineUpdates: StateFlow<Boolean> = _autoCheckEngineUpdates.asStateFlow()
+
+    private val _defaultSubtitles = MutableStateFlow(
+        prefs.getBoolean(KEY_DEFAULT_SUBTITLES, false)
+    )
+    val defaultSubtitles: StateFlow<Boolean> = _defaultSubtitles.asStateFlow()
+
+    private val _defaultSubtitleLang = MutableStateFlow(
+        prefs.getString(KEY_DEFAULT_SUBTITLE_LANG, "ar") ?: "ar"
+    )
+    val defaultSubtitleLang: StateFlow<String> = _defaultSubtitleLang.asStateFlow()
+
+    fun setCookiesContent(content: String) {
+        prefs.edit().putString(KEY_COOKIES_CONTENT, content).apply()
+        _cookiesContent.value = content
+    }
+
+    fun clearCookies() {
+        prefs.edit().remove(KEY_COOKIES_CONTENT).apply()
+        _cookiesContent.value = ""
+    }
+
+    fun setAutoCheckEngineUpdates(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_CHECK_UPDATES, enabled).apply()
+        _autoCheckEngineUpdates.value = enabled
+    }
+
+    fun setDefaultSubtitles(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DEFAULT_SUBTITLES, enabled).apply()
+        _defaultSubtitles.value = enabled
+    }
+
+    fun setDefaultSubtitleLang(lang: String) {
+        prefs.edit().putString(KEY_DEFAULT_SUBTITLE_LANG, lang).apply()
+        _defaultSubtitleLang.value = lang
+    }
+
     fun setConcurrentDownloads(limit: Int) {
         val safeLimit = limit.coerceIn(1, 3)
         prefs.edit().putInt(KEY_CONCURRENT_DOWNLOADS, safeLimit).apply()
@@ -82,6 +127,10 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_SHOW_NOTIFICATIONS = "key_show_notifications"
         private const val KEY_THEME_MODE = "key_theme_mode"
         private const val KEY_LANGUAGE_CODE = "key_language_code"
+        private const val KEY_COOKIES_CONTENT = "key_cookies_content"
+        private const val KEY_AUTO_CHECK_UPDATES = "key_auto_check_updates"
+        private const val KEY_DEFAULT_SUBTITLES = "key_default_subtitles"
+        private const val KEY_DEFAULT_SUBTITLE_LANG = "key_default_subtitle_lang"
 
         const val DEFAULT_CONCURRENT_DOWNLOADS = 1
         const val DEFAULT_AUTO_RETRY = true

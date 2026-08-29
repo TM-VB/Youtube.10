@@ -30,6 +30,13 @@ class DownloadVideosApplication : Application() {
             try {
                 container.pythonRuntimeManager.initialize()
                 YtDlpEngine.init(applicationContext)
+
+                // Check for yt-dlp updates in background if auto-update is enabled
+                if (container.appSettings.autoCheckEngineUpdates.value) {
+                    try {
+                        YtDlpEngine.updateEngine(applicationContext)
+                    } catch (_: Throwable) {}
+                }
             } catch (t: Throwable) {
                 t.printStackTrace()
             }

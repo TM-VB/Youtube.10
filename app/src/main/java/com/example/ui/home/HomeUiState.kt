@@ -3,6 +3,7 @@ package com.example.ui.home
 import com.example.domain.model.CutSettings
 import com.example.domain.model.DownloadError
 import com.example.domain.model.FormatInfo
+import com.example.domain.model.PlaylistInfo
 import com.example.domain.model.VideoInfo
 import com.example.downloader.engine.CategorizedFormats
 import com.example.ytdlp.FormatSelection
@@ -48,7 +49,9 @@ sealed interface HomeUiState {
         val isManualInputEnabled: Boolean = false,
         val manualFormatInput: String = "",
         val availablePresets: List<Pair<SimpleQualityPreset, FormatSelection>> = emptyList(),
-        val cutSettings: CutSettings = CutSettings()
+        val cutSettings: CutSettings = CutSettings(),
+        val downloadSubtitles: Boolean = false,
+        val selectedSubtitleLang: String = "ar"
     ) : HomeUiState {
         val visibleFormats: List<FormatInfo>
             get() = when (activeTab) {
@@ -66,6 +69,19 @@ sealed interface HomeUiState {
 
         val isAudioOnly: Boolean
             get() = selectedSelection?.isAudioOnly == true || selectedFormat?.isAudioOnly == true
+    }
+
+    data class PlaylistReady(
+        val playlistInfo: PlaylistInfo,
+        val selectedIds: Set<String> = emptySet(),
+        val selectedPreset: QualityPreset = QualityPreset.BEST_QUALITY,
+        val isAudioOnly: Boolean = false
+    ) : HomeUiState {
+        val selectedCount: Int
+            get() = selectedIds.size
+
+        val isAllSelected: Boolean
+            get() = playlistInfo.entries.isNotEmpty() && selectedIds.size == playlistInfo.entries.size
     }
 
     data class Error(val error: DownloadError) : HomeUiState

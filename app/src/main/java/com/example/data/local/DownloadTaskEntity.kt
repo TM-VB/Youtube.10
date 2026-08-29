@@ -38,5 +38,7 @@ data class DownloadTaskEntity(
     val maxRetries: Int = 3,
     val isAudioOnly: Boolean = false,
     val isVideoOnly: Boolean = false,
+    val downloadSubtitles: Boolean = false,
+    val subtitleLanguage: String? = null,
     val queueOrder: Long = System.currentTimeMillis()
 )

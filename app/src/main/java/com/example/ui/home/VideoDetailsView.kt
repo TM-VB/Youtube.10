@@ -867,6 +867,77 @@ fun VideoDetailsView(
                     }
                 }
 
+                // Subtitles & Closed Captions (CC) Section
+                if (!state.isAudioOnly) {
+                    HorizontalDivider()
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.subtitles_section),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = stringResource(R.string.subtitles_enable_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        androidx.compose.material3.Switch(
+                            checked = state.downloadSubtitles,
+                            onCheckedChange = { viewModel.toggleSubtitles(it) },
+                            modifier = Modifier.testTag("subtitles_switch")
+                        )
+                    }
+
+                    if (state.downloadSubtitles) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.subtitles_language),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                val langs = listOf(
+                                    "ar" to "العربية (Arabic)",
+                                    "en" to "English",
+                                    "fr" to "Français",
+                                    "es" to "Español",
+                                    "tr" to "Türkçe"
+                                )
+
+                                langs.forEach { (code, label) ->
+                                    FilterChip(
+                                        selected = state.selectedSubtitleLang == code,
+                                        onClick = { viewModel.selectSubtitleLanguage(code) },
+                                        label = { Text(label) },
+                                        leadingIcon = if (state.selectedSubtitleLang == code) {
+                                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                        } else null
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Big Download Button
                 Button(
                     onClick = {

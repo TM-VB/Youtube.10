@@ -39,8 +39,18 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SettingsBrightness
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.Cookie
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.filled.VideoSettings
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -377,6 +387,134 @@ fun SettingsScreen(
                                 modifier = Modifier.testTag("switch_notifications")
                             )
                         }
+                        HorizontalDivider()
+
+                        // Subtitle Preferences
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.settings_default_subtitles),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = stringResource(R.string.settings_default_subtitles_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.defaultSubtitles,
+                                onCheckedChange = { viewModel.setDefaultSubtitles(it) },
+                                modifier = Modifier.testTag("switch_default_subtitles")
+                            )
+                        }
+
+                        if (state.defaultSubtitles) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.subtitles_language),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    val langs = listOf(
+                                        "ar" to "العربية",
+                                        "en" to "English",
+                                        "fr" to "Français",
+                                        "es" to "Español"
+                                    )
+
+                                    langs.forEach { (code, label) ->
+                                        FilterChip(
+                                            selected = state.defaultSubtitleLang == code,
+                                            onClick = { viewModel.setDefaultSubtitleLang(code) },
+                                            label = { Text(label) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Cookies & Authentication Section
+            item {
+                Text(
+                    text = stringResource(R.string.settings_cookies_section),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Cookie,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.settings_cookies_title),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (state.cookiesContent.isNotBlank()) {
+                                        stringResource(R.string.cookies_active_status)
+                                    } else {
+                                        stringResource(R.string.cookies_empty_status)
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (state.cookiesContent.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = stringResource(R.string.settings_cookies_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        OutlinedButton(
+                            onClick = { viewModel.openCookiesDialog() },
+                            modifier = Modifier.fillMaxWidth().testTag("btn_configure_cookies")
+                        ) {
+                            Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.btn_edit_cookies))
+                        }
                     }
                 }
             }
@@ -605,6 +743,33 @@ fun SettingsScreen(
 
                         HorizontalDivider()
 
+                        // Auto-update toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.settings_auto_update_ytdlp),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = stringResource(R.string.settings_auto_update_ytdlp_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = state.autoUpdateYtDlp,
+                                onCheckedChange = { viewModel.setAutoUpdateYtDlp(it) },
+                                modifier = Modifier.testTag("switch_auto_update_ytdlp")
+                            )
+                        }
+
+                        HorizontalDivider()
+
                         OutlinedButton(
                             onClick = { viewModel.openLogs() },
                             modifier = Modifier.fillMaxWidth().testTag("btn_view_logs")
@@ -621,6 +786,78 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
         }
+    }
+
+    val showCookiesDialog by viewModel.showCookiesDialog.collectAsState()
+
+    // Cookies Editor Dialog
+    if (showCookiesDialog) {
+        var cookiesInput by remember { mutableStateOf(state.cookiesContent) }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.closeCookiesDialog() },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Cookie, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.cookies_dialog_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.cookies_dialog_help),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    OutlinedTextField(
+                        value = cookiesInput,
+                        onValueChange = { cookiesInput = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .testTag("cookies_text_input"),
+                        placeholder = {
+                            Text("# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t...", fontSize = 12.sp)
+                        },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.saveCookies(cookiesInput.trim()) },
+                    modifier = Modifier.testTag("save_cookies_button")
+                ) {
+                    Text(stringResource(R.string.btn_save_cookies))
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (cookiesInput.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                cookiesInput = ""
+                                viewModel.saveCookies("")
+                            }
+                        ) {
+                            Text(stringResource(R.string.btn_clear_cookies), color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(onClick = { viewModel.closeCookiesDialog() }) {
+                        Text(stringResource(R.string.btn_close))
+                    }
+                }
+            }
+        )
     }
 
     // Developer Logs Dialog

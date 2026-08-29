@@ -7,11 +7,15 @@ import com.example.DownloadVideosApplication
 import com.example.data.local.DownloadTaskEntity
 import com.example.domain.model.CutSettings
 import com.example.domain.model.DownloadError
+import com.example.domain.model.DownloadRequest
 import com.example.domain.model.FormatInfo
+import com.example.domain.model.PlaylistEntry
+import com.example.domain.model.PlaylistInfo
 import com.example.domain.model.TimeRange
 import com.example.ytdlp.FormatSelection
 import com.example.ytdlp.SimpleQualityPreset
 import com.example.ytdlp.SmartFormatEngine
+import com.example.ytdlp.YtDlpEngine
 import com.example.ytdlp.YtDlpErrorMapper
 import com.example.ytdlp.YtDlpLogger
 import kotlinx.coroutines.Job
@@ -71,6 +75,21 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         analysisJob = viewModelScope.launch {
             _uiState.value = HomeUiState.Analyzing(processId)
 
+            // Check if user entered a playlist link
+            if (YtDlpEngine.isPlaylistUrl(url)) {
+                val playlistRes = YtDlpEngine.extractPlaylist(url, app.applicationContext, processId)
+                if (playlistRes.isSuccess) {
+                    val playlistInfo = playlistRes.getOrNull()
+                    if (playlistInfo != null && playlistInfo.entries.isNotEmpty()) {
+                        _uiState.value = HomeUiState.PlaylistReady(
+                            playlistInfo = playlistInfo,
+                            selectedIds = playlistInfo.entries.map { it.id }.toSet()
+                        )
+                        return@launch
+                    }
+                }
+            }
+
             val result = container.videoExtractor.extractInfo(url, processId)
             result.fold(
                 onSuccess = { videoInfo ->
@@ -107,6 +126,76 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             )
         }
+    }
+
+    fun togglePlaylistEntry(id: String) {
+        val current = _uiState.value as? HomeUiState.PlaylistReady ?: return
+        val currentIds = current.selectedIds.toMutableSet()
+        if (currentIds.contains(id)) {
+            currentIds.remove(id)
+        } else {
+            currentIds.add(id)
+        }
+        _uiState.value = current.copy(selectedIds = currentIds)
+    }
+
+    fun selectAllPlaylistEntries() {
+        val current = _uiState.value as? HomeUiState.PlaylistReady ?: return
+        _uiState.value = current.copy(selectedIds = current.playlistInfo.entries.map { it.id }.toSet())
+    }
+
+    fun deselectAllPlaylistEntries() {
+        val current = _uiState.value as? HomeUiState.PlaylistReady ?: return
+        _uiState.value = current.copy(selectedIds = emptySet())
+    }
+
+    fun setPlaylistPreset(preset: QualityPreset) {
+        val current = _uiState.value as? HomeUiState.PlaylistReady ?: return
+        _uiState.value = current.copy(
+            selectedPreset = preset,
+            isAudioOnly = (preset == QualityPreset.BEST_AUDIO)
+        )
+    }
+
+    fun downloadPlaylist(onNavigateToDownloads: () -> Unit) {
+        val current = _uiState.value as? HomeUiState.PlaylistReady ?: return
+        val selectedEntries = current.playlistInfo.entries.filter { current.selectedIds.contains(it.id) }
+        if (selectedEntries.isEmpty()) return
+
+        val formatSelector = when (current.selectedPreset) {
+            QualityPreset.BEST_QUALITY -> "bestvideo+bestaudio/best"
+            QualityPreset.BEST_VIDEO -> "bestvideo+bestaudio/best"
+            QualityPreset.P1080 -> "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+            QualityPreset.P720 -> "bestvideo[height<=720]+bestaudio/best[height<=720]"
+            QualityPreset.P480 -> "bestvideo[height<=480]+bestaudio/best[height<=480]"
+            QualityPreset.BEST_AUDIO -> "bestaudio/best"
+        }
+
+        val requests = selectedEntries.map { entry ->
+            DownloadRequest(
+                url = entry.url,
+                title = entry.title,
+                thumbnailUrl = entry.thumbnailUrl,
+                formatSelector = formatSelector,
+                formatDescription = current.selectedPreset.label,
+                isAudioOnly = current.isAudioOnly
+            )
+        }
+
+        container.downloadManager.enqueueBatch(requests)
+        _uiState.value = HomeUiState.Idle
+        _urlInput.value = ""
+        onNavigateToDownloads()
+    }
+
+    fun toggleSubtitles(enabled: Boolean) {
+        val current = _uiState.value as? HomeUiState.Ready ?: return
+        _uiState.value = current.copy(downloadSubtitles = enabled)
+    }
+
+    fun selectSubtitleLanguage(lang: String) {
+        val current = _uiState.value as? HomeUiState.Ready ?: return
+        _uiState.value = current.copy(selectedSubtitleLang = lang)
     }
 
     fun cancelAnalysis() {
@@ -296,7 +385,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             formatId = formatSelector,
             formatDescription = formatDescription,
             isAudioOnly = isAudioOnly,
-            timeRange = timeRange
+            timeRange = timeRange,
+            downloadSubtitles = current.downloadSubtitles,
+            subtitleLanguage = current.selectedSubtitleLang
         )
 
         _uiState.value = HomeUiState.Idle

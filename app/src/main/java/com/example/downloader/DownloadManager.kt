@@ -40,7 +40,9 @@ class DownloadManager private constructor(private val context: Context) {
         formatId: String,
         formatDescription: String,
         isAudioOnly: Boolean,
-        timeRange: TimeRange?
+        timeRange: TimeRange?,
+        downloadSubtitles: Boolean = false,
+        subtitleLanguage: String? = null
     ): String {
         return queueManager.enqueueDownload(
             url = url,
@@ -49,8 +51,14 @@ class DownloadManager private constructor(private val context: Context) {
             formatId = formatId,
             formatDescription = formatDescription,
             isAudioOnly = isAudioOnly,
-            timeRange = timeRange
+            timeRange = timeRange,
+            downloadSubtitles = downloadSubtitles,
+            subtitleLanguage = subtitleLanguage
         )
+    }
+
+    fun enqueueBatch(requests: List<DownloadRequest>) {
+        queueManager.enqueueBatch(requests)
     }
 
     fun pauseDownload(taskId: String) {
