@@ -1,26 +1,17 @@
 package com.example.ui.components
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.PlaybackParams
+import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,14 +22,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -47,7 +36,6 @@ import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.VolumeDown
-import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -72,30 +60,47 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.example.R
 import kotlinx.coroutines.delay
 import java.io.File
 
+/**
+ * In-App Media Player Dialog powered by AndroidX Media3 ExoPlayer.
+ *
+ * Guarantees:
+ * 1. Play/Pause preserves current playback position (never resets to 00:00).
+ * 2. Accurate video duration reading and display formatted (e.g. 00:25 / 01:00).
+ * 3. Exact UI controls synchronization with player state.
+ * 4. Smooth seeking, speed adjustment, volume control, and fullscreen switching.
+ */
 @Composable
 fun InAppMediaPlayerDialog(
     title: String,
@@ -105,6 +110,48 @@ fun InAppMediaPlayerDialog(
 ) {
     val context = LocalContext.current
     var isFullscreen by remember { mutableStateOf(false) }
+
+    // Resolve media URI
+    val mediaUri = remember(contentUri, mediaPath) {
+        when {
+            !contentUri.isNullOrBlank() -> Uri.parse(contentUri)
+            !mediaPath.isNullOrBlank() -> {
+                val f = File(mediaPath)
+                if (f.exists()) Uri.fromFile(f) else null
+            }
+            else -> null
+        }
+    }
+
+    // Try reading metadata duration immediately from file
+    val metadataDuration = remember(contentUri, mediaPath) {
+        extractMediaDuration(context, contentUri, mediaPath)
+    }
+
+    // Persistent single ExoPlayer instance for this dialog
+    val exoPlayer = remember(mediaUri) {
+        if (mediaUri != null) {
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build()
+
+            ExoPlayer.Builder(context)
+                .setAudioAttributes(audioAttributes, true)
+                .build().apply {
+                    setMediaItem(MediaItem.fromUri(mediaUri))
+                    prepare()
+                    playWhenReady = true
+                }
+        } else null
+    }
+
+    // Release player on disposal
+    DisposableEffect(exoPlayer) {
+        onDispose {
+            exoPlayer?.release()
+        }
+    }
 
     if (isFullscreen) {
         Dialog(
@@ -122,8 +169,8 @@ fun InAppMediaPlayerDialog(
             ) {
                 PlayerCore(
                     title = title,
-                    mediaPath = mediaPath,
-                    contentUri = contentUri,
+                    exoPlayer = exoPlayer,
+                    initialDuration = metadataDuration,
                     isFullscreen = true,
                     onToggleFullscreen = { isFullscreen = false },
                     onClose = onDismiss
@@ -135,7 +182,7 @@ fun InAppMediaPlayerDialog(
             onDismissRequest = onDismiss,
             properties = DialogProperties(usePlatformDefaultWidth = false),
             modifier = Modifier
-                .fillMaxWidth(0.95f)
+                .fillMaxWidth(0.96f)
                 .padding(vertical = 16.dp),
             title = null,
             text = {
@@ -146,8 +193,8 @@ fun InAppMediaPlayerDialog(
                 ) {
                     PlayerCore(
                         title = title,
-                        mediaPath = mediaPath,
-                        contentUri = contentUri,
+                        exoPlayer = exoPlayer,
+                        initialDuration = metadataDuration,
                         isFullscreen = false,
                         onToggleFullscreen = { isFullscreen = true },
                         onClose = onDismiss
@@ -162,40 +209,88 @@ fun InAppMediaPlayerDialog(
 @Composable
 private fun PlayerCore(
     title: String,
-    mediaPath: String?,
-    contentUri: String?,
+    exoPlayer: ExoPlayer?,
+    initialDuration: Long,
     isFullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
-    val context = LocalContext.current
-
-    // Player States
-    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var isPrepared by remember { mutableStateOf(false) }
-    var isPlaying by remember { mutableStateOf(false) }
-    var isCompleted by remember { mutableStateOf(false) }
+    // Player playback state observation
+    var isPlaying by remember { mutableStateOf(exoPlayer?.isPlaying ?: false) }
+    var playbackState by remember { mutableIntStateOf(exoPlayer?.playbackState ?: Player.STATE_IDLE) }
     var currentPosition by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(1L) }
+    var duration by remember { mutableLongStateOf(if (initialDuration > 0) initialDuration else 0L) }
+    var videoAspectRatio by remember { mutableFloatStateOf(16f / 9f) }
+    var errorMessage by remember { mutableStateOf<String?>(if (exoPlayer == null) "Video source could not be resolved" else null) }
+
+    // User interaction / controls
     var isSeeking by remember { mutableStateOf(false) }
     var seekPreviewPosition by remember { mutableFloatStateOf(0f) }
-    var videoAspectRatio by remember { mutableFloatStateOf(16f / 9f) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-
-    // Audio & Playback Controls
     var volume by remember { mutableFloatStateOf(1.0f) }
     var isMuted by remember { mutableStateOf(false) }
     var isLooping by remember { mutableStateOf(false) }
     var currentSpeed by remember { mutableFloatStateOf(1.0f) }
     var showSpeedMenu by remember { mutableStateOf(false) }
-    var showVolumeSlider by remember { mutableStateOf(false) }
 
-    // UI Overlay & Gestures
     var areControlsVisible by remember { mutableStateOf(true) }
     var lastUserInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var doubleTapSeekFeedback by remember { mutableStateOf<String?>(null) }
 
-    // Auto-hide controls timer
+    // Register Player.Listener for real-time synchronization
+    DisposableEffect(exoPlayer) {
+        if (exoPlayer == null) return@DisposableEffect onDispose {}
+
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                playbackState = state
+                if (state == Player.STATE_READY) {
+                    val playerDur = exoPlayer.duration
+                    if (playerDur != C.TIME_UNSET && playerDur > 0) {
+                        duration = playerDur
+                    }
+                }
+            }
+
+            override fun onEvents(player: Player, events: Player.Events) {
+                isPlaying = player.isPlaying
+                playbackState = player.playbackState
+                val playerDur = player.duration
+                if (playerDur != C.TIME_UNSET && playerDur > 0) {
+                    duration = playerDur
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    videoAspectRatio = videoSize.width.toFloat() / videoSize.height.toFloat()
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                errorMessage = error.message ?: "Playback error"
+            }
+        }
+
+        exoPlayer.addListener(listener)
+
+        // Seed initial values
+        isPlaying = exoPlayer.isPlaying
+        playbackState = exoPlayer.playbackState
+        val initialDur = exoPlayer.duration
+        if (initialDur != C.TIME_UNSET && initialDur > 0) {
+            duration = initialDur
+        }
+
+        onDispose {
+            exoPlayer.removeListener(listener)
+        }
+    }
+
+    // Auto-hide controls timer (after 3.5s of inactivity when playing)
     LaunchedEffect(areControlsVisible, isPlaying, lastUserInteractionTime) {
         if (areControlsVisible && isPlaying) {
             delay(3500)
@@ -203,33 +298,18 @@ private fun PlayerCore(
         }
     }
 
-    // Progress polling loop
-    LaunchedEffect(isPlaying, isPrepared) {
-        while (isPrepared && isPlaying) {
-            mediaPlayer?.let { mp ->
-                try {
-                    if (mp.isPlaying && !isSeeking) {
-                        currentPosition = mp.currentPosition.toLong()
-                        val dur = mp.duration.toLong()
-                        if (dur > 0) duration = dur
-                    }
-                } catch (_: Exception) {}
+    // High-precision timeline polling
+    LaunchedEffect(exoPlayer, isPlaying, isSeeking) {
+        while (exoPlayer != null) {
+            if (!isSeeking) {
+                val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+                currentPosition = pos
+                val dur = exoPlayer.duration
+                if (dur != C.TIME_UNSET && dur > 0 && dur != duration) {
+                    duration = dur
+                }
             }
-            delay(250)
-        }
-    }
-
-    // Cleanup on dispose
-    DisposableEffect(Unit) {
-        onDispose {
-            mediaPlayer?.let { mp ->
-                try {
-                    if (mp.isPlaying) mp.stop()
-                    mp.reset()
-                    mp.release()
-                } catch (_: Exception) {}
-            }
-            mediaPlayer = null
+            delay(200)
         }
     }
 
@@ -240,52 +320,32 @@ private fun PlayerCore(
 
     fun seekRelative(offsetMs: Long) {
         triggerInteraction()
-        mediaPlayer?.let { mp ->
-            try {
-                val newPos = (currentPosition + offsetMs).coerceIn(0L, duration)
-                mp.seekTo(newPos.toInt())
-                currentPosition = newPos
-                if (isCompleted && offsetMs < 0) {
-                    isCompleted = false
-                    mp.start()
-                    isPlaying = true
-                }
-            } catch (_: Exception) {}
+        exoPlayer?.let { player ->
+            val cur = player.currentPosition
+            val maxDur = if (duration > 0) duration else Long.MAX_VALUE
+            val target = (cur + offsetMs).coerceIn(0L, maxDur)
+            player.seekTo(target)
+            currentPosition = target
+            if (playbackState == Player.STATE_ENDED && offsetMs < 0) {
+                player.play()
+            }
         }
     }
 
     fun setPlaybackSpeed(speed: Float) {
         currentSpeed = speed
-        mediaPlayer?.let { mp ->
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    val params = mp.playbackParams ?: PlaybackParams()
-                    params.speed = speed
-                    mp.playbackParams = params
-                }
-            } catch (_: Exception) {}
-        }
+        exoPlayer?.setPlaybackSpeed(speed)
     }
 
     fun updateVolume(newVol: Float) {
         volume = newVol.coerceIn(0f, 1f)
         isMuted = newVol <= 0f
-        mediaPlayer?.let { mp ->
-            try {
-                val actual = if (isMuted) 0f else volume
-                mp.setVolume(actual, actual)
-            } catch (_: Exception) {}
-        }
+        exoPlayer?.volume = if (isMuted) 0f else volume
     }
 
     fun toggleMute() {
         isMuted = !isMuted
-        mediaPlayer?.let { mp ->
-            try {
-                val actual = if (isMuted) 0f else volume
-                mp.setVolume(actual, actual)
-            } catch (_: Exception) {}
-        }
+        exoPlayer?.volume = if (isMuted) 0f else volume
     }
 
     val displayTitle = title.ifBlank { stringResource(R.string.media_player_title) }
@@ -296,112 +356,34 @@ private fun PlayerCore(
             .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
-        // 1. Native Surface & MediaPlayer rendering
+        // 1. ExoPlayer Video Surface View
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .aspectRatio(videoAspectRatio, matchHeightConstraintsFirst = isFullscreen),
             contentAlignment = Alignment.Center
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    SurfaceView(ctx).apply {
-                        layoutParams = FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-
-                        holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                try {
-                                    val mp = MediaPlayer().apply {
-                                        setDisplay(holder)
-                                        setAudioAttributes(
-                                            AudioAttributes.Builder()
-                                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                                .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                                                .build()
-                                        )
-
-                                        var sourceLoaded = false
-
-                                        // Try ContentUri first
-                                        if (!contentUri.isNullOrBlank()) {
-                                            try {
-                                                val uri = Uri.parse(contentUri)
-                                                ctx.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                                                    setDataSource(pfd.fileDescriptor)
-                                                    sourceLoaded = true
-                                                } ?: run {
-                                                    setDataSource(ctx, uri)
-                                                    sourceLoaded = true
-                                                }
-                                            } catch (_: Exception) {}
-                                        }
-
-                                        // Fallback to mediaPath File
-                                        if (!sourceLoaded && !mediaPath.isNullOrBlank()) {
-                                            val file = File(mediaPath)
-                                            if (file.exists()) {
-                                                setDataSource(file.absolutePath)
-                                                sourceLoaded = true
-                                            }
-                                        }
-
-                                        if (!sourceLoaded) {
-                                            errorMessage = "Video file could not be opened."
-                                            return
-                                        }
-
-                                        setOnVideoSizeChangedListener { _, width, height ->
-                                            if (width > 0 && height > 0) {
-                                                videoAspectRatio = width.toFloat() / height.toFloat()
-                                            }
-                                        }
-
-                                        setOnPreparedListener { player ->
-                                            isPrepared = true
-                                            duration = player.duration.toLong().coerceAtLeast(1L)
-                                            player.start()
-                                            isPlaying = true
-                                            val actual = if (isMuted) 0f else volume
-                                            player.setVolume(actual, actual)
-                                            if (currentSpeed != 1.0f) {
-                                                setPlaybackSpeed(currentSpeed)
-                                            }
-                                        }
-
-                                        setOnCompletionListener {
-                                            isPlaying = false
-                                            isCompleted = true
-                                            currentPosition = duration
-                                        }
-
-                                        setOnErrorListener { _, what, extra ->
-                                            errorMessage = "Playback error (code $what, $extra)"
-                                            isPrepared = false
-                                            isPlaying = false
-                                            true
-                                        }
-
-                                        prepareAsync()
-                                    }
-                                    mediaPlayer = mp
-                                } catch (e: Exception) {
-                                    errorMessage = e.localizedMessage ?: "Failed to initialize video player"
-                                }
-                            }
-
-                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                mediaPlayer?.setDisplay(null)
-                            }
-                        })
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+            if (exoPlayer != null) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            player = exoPlayer
+                            useController = false
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+                        }
+                    },
+                    update = { playerView ->
+                        if (playerView.player != exoPlayer) {
+                            playerView.player = exoPlayer
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         // 2. Gesture Detector for tap to show/hide controls and double tap to seek -10s / +10s
@@ -468,8 +450,9 @@ private fun PlayerCore(
             }
         }
 
-        // 4. Loading Spinner
-        if (!isPrepared && errorMessage == null) {
+        // 4. Loading / Buffering Spinner
+        val isBuffering = playbackState == Player.STATE_BUFFERING || (playbackState == Player.STATE_IDLE && exoPlayer != null)
+        if (isBuffering && errorMessage == null) {
             CircularProgressIndicator(
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(48.dp)
@@ -597,7 +580,7 @@ private fun PlayerCore(
                     IconButton(onClick = {
                         triggerInteraction()
                         isLooping = !isLooping
-                        mediaPlayer?.isLooping = isLooping
+                        exoPlayer?.repeatMode = if (isLooping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
                     }) {
                         Icon(
                             imageVector = if (isLooping) Icons.Default.RepeatOne else Icons.Default.Repeat,
@@ -608,10 +591,13 @@ private fun PlayerCore(
                     }
 
                     // Fullscreen Toggle Button
-                    IconButton(onClick = {
-                        triggerInteraction()
-                        onToggleFullscreen()
-                    }) {
+                    IconButton(
+                        onClick = {
+                            triggerInteraction()
+                            onToggleFullscreen()
+                        },
+                        modifier = Modifier.testTag("btn_player_fullscreen")
+                    ) {
                         Icon(
                             imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                             contentDescription = if (isFullscreen) stringResource(R.string.player_exit_fullscreen) else stringResource(R.string.player_fullscreen),
@@ -621,17 +607,10 @@ private fun PlayerCore(
                     }
 
                     // Close Button
-                    IconButton(onClick = {
-                        mediaPlayer?.let { mp ->
-                            try {
-                                if (mp.isPlaying) mp.stop()
-                                mp.reset()
-                                mp.release()
-                            } catch (_: Exception) {}
-                        }
-                        mediaPlayer = null
-                        onClose()
-                    }) {
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.testTag("btn_player_close")
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = stringResource(R.string.btn_close),
@@ -650,7 +629,9 @@ private fun PlayerCore(
                     // Rewind 10s
                     FilledTonalIconButton(
                         onClick = { seekRelative(-10000L) },
-                        modifier = Modifier.size(50.dp),
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("btn_player_rewind"),
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
                             containerColor = Color.White.copy(alpha = 0.2f),
                             contentColor = Color.White
@@ -667,25 +648,20 @@ private fun PlayerCore(
                     FilledIconButton(
                         onClick = {
                             triggerInteraction()
-                            mediaPlayer?.let { mp ->
-                                try {
-                                    if (isCompleted) {
-                                        mp.seekTo(0)
-                                        mp.start()
-                                        isPlaying = true
-                                        isCompleted = false
-                                        currentPosition = 0
-                                    } else if (mp.isPlaying) {
-                                        mp.pause()
-                                        isPlaying = false
-                                    } else {
-                                        mp.start()
-                                        isPlaying = true
-                                    }
-                                } catch (_: Exception) {}
+                            exoPlayer?.let { player ->
+                                if (playbackState == Player.STATE_ENDED) {
+                                    player.seekTo(0)
+                                    player.play()
+                                } else if (player.isPlaying) {
+                                    player.pause()
+                                } else {
+                                    player.play()
+                                }
                             }
                         },
-                        modifier = Modifier.size(68.dp),
+                        modifier = Modifier
+                            .size(68.dp)
+                            .testTag("btn_player_play_pause"),
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
@@ -693,12 +669,12 @@ private fun PlayerCore(
                     ) {
                         Icon(
                             imageVector = when {
-                                isCompleted -> Icons.Default.Replay
+                                playbackState == Player.STATE_ENDED -> Icons.Default.Replay
                                 isPlaying -> Icons.Default.Pause
                                 else -> Icons.Default.PlayArrow
                             },
                             contentDescription = when {
-                                isCompleted -> "Replay"
+                                playbackState == Player.STATE_ENDED -> "Replay"
                                 isPlaying -> "Pause"
                                 else -> "Play"
                             },
@@ -709,7 +685,9 @@ private fun PlayerCore(
                     // Fast Forward 10s
                     FilledTonalIconButton(
                         onClick = { seekRelative(10000L) },
-                        modifier = Modifier.size(50.dp),
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("btn_player_forward"),
                         colors = IconButtonDefaults.filledTonalIconButtonColors(
                             containerColor = Color.White.copy(alpha = 0.2f),
                             contentColor = Color.White
@@ -732,8 +710,17 @@ private fun PlayerCore(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     // Timeline Progress Slider
-                    val effectivePosition = if (isSeeking) (seekPreviewPosition * duration).toLong() else currentPosition
-                    val progressFraction = (effectivePosition.toFloat() / duration.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
+                    val effectivePosition = if (isSeeking) {
+                        (seekPreviewPosition * (if (duration > 0) duration else 1L)).toLong()
+                    } else {
+                        currentPosition
+                    }
+
+                    val progressFraction = if (duration > 0) {
+                        (effectivePosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
 
                     Slider(
                         value = progressFraction,
@@ -743,17 +730,10 @@ private fun PlayerCore(
                             seekPreviewPosition = frac
                         },
                         onValueChangeFinished = {
-                            val targetMs = (seekPreviewPosition * duration).toLong()
-                            mediaPlayer?.let { mp ->
-                                try {
-                                    mp.seekTo(targetMs.toInt())
-                                    currentPosition = targetMs
-                                    if (isCompleted) {
-                                        isCompleted = false
-                                        mp.start()
-                                        isPlaying = true
-                                    }
-                                } catch (_: Exception) {}
+                            if (duration > 0) {
+                                val targetMs = (seekPreviewPosition * duration).toLong().coerceIn(0L, duration)
+                                exoPlayer?.seekTo(targetMs)
+                                currentPosition = targetMs
                             }
                             isSeeking = false
                             triggerInteraction()
@@ -763,7 +743,9 @@ private fun PlayerCore(
                             activeTrackColor = MaterialTheme.colorScheme.primary,
                             inactiveTrackColor = Color.White.copy(alpha = 0.3f)
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("slider_player_timeline")
                     )
 
                     // Bottom info and sub-controls row
@@ -772,11 +754,13 @@ private fun PlayerCore(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Current Elapsed / Total Duration Text
+                        val durationDisplay = if (duration > 0) formatDuration(duration) else "--:--"
                         Text(
-                            text = "${formatDuration(effectivePosition)} / ${formatDuration(duration)}",
+                            text = "${formatDuration(effectivePosition)} / $durationDisplay",
                             color = Color.White,
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.testTag("text_player_timestamps")
                         )
 
                         Spacer(modifier = Modifier.weight(1f))
@@ -791,7 +775,9 @@ private fun PlayerCore(
                                     triggerInteraction()
                                     toggleMute()
                                 },
-                                modifier = Modifier.size(36.dp)
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("btn_player_mute")
                             ) {
                                 val volIcon = when {
                                     isMuted || volume == 0f -> Icons.Default.VolumeOff
@@ -813,7 +799,9 @@ private fun PlayerCore(
                                     triggerInteraction()
                                     updateVolume(newVol)
                                 },
-                                modifier = Modifier.width(80.dp),
+                                modifier = Modifier
+                                    .width(80.dp)
+                                    .testTag("slider_player_volume"),
                                 colors = SliderDefaults.colors(
                                     thumbColor = MaterialTheme.colorScheme.primary,
                                     activeTrackColor = MaterialTheme.colorScheme.primary,
@@ -828,8 +816,39 @@ private fun PlayerCore(
     }
 }
 
+/**
+ * Reads video duration immediately from container metadata if available on disk / content resolver.
+ */
+private fun extractMediaDuration(context: Context, contentUri: String?, mediaPath: String?): Long {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        if (!contentUri.isNullOrBlank()) {
+            val uri = Uri.parse(contentUri)
+            retriever.setDataSource(context, uri)
+        } else if (!mediaPath.isNullOrBlank()) {
+            val file = File(mediaPath)
+            if (file.exists()) {
+                retriever.setDataSource(file.absolutePath)
+            } else {
+                return 0L
+            }
+        } else {
+            return 0L
+        }
+        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        durationStr?.toLongOrNull() ?: 0L
+    } catch (_: Throwable) {
+        0L
+    } finally {
+        try {
+            retriever.release()
+        } catch (_: Throwable) {}
+    }
+}
+
 private fun formatDuration(millis: Long): String {
-    val totalSeconds = (millis / 1000).coerceAtLeast(0)
+    if (millis <= 0L) return "00:00"
+    val totalSeconds = millis / 1000
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
