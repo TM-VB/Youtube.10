@@ -91,9 +91,43 @@ class YtDlpDownloadEngine(
             // 3. Locate final completed file
             val downloadedFiles = workDir.listFiles()?.filter {
                 it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl")
+            } ?: emptyList()
+
+            var finalFile = downloadedFiles.maxByOrNull { it.lastModified() }
+
+            // If separate unmerged video and audio streams exist, merge them with FFmpeg
+            if (!request.isAudioOnly && downloadedFiles.size > 1) {
+                val hasCompletedCombinedVideo = downloadedFiles.any {
+                    val ext = it.extension.lowercase()
+                    (ext == "mp4" || ext == "mkv") && !it.name.contains(".f") && it.length() > 1024L
+                }
+
+                if (!hasCompletedCombinedVideo) {
+                    val videoCandidates = downloadedFiles.filter {
+                        val ext = it.extension.lowercase()
+                        ext == "mp4" || ext == "webm" || ext == "mkv"
+                    }
+                    val audioCandidates = downloadedFiles.filter {
+                        val ext = it.extension.lowercase()
+                        ext == "m4a" || ext == "mp3" || ext == "opus" || ext == "aac" || ext == "ogg"
+                    }
+
+                    val primaryVideo = videoCandidates.maxByOrNull { it.length() }
+                    val primaryAudio = audioCandidates.maxByOrNull { it.length() }
+
+                    if (primaryVideo != null && primaryAudio != null && primaryVideo != primaryAudio) {
+                        val mergedOut = File(workDir, "merged_${System.currentTimeMillis()}.mp4")
+                        try {
+                            val ffmpegMgr = ffmpegManager ?: com.example.downloader.ffmpeg.FFmpegManager(context)
+                            val mergeResult = ffmpegMgr.mergeVideoAudio(primaryVideo, primaryAudio, mergedOut)
+                            if (mergeResult.isSuccess && mergedOut.exists() && mergedOut.length() > 0) {
+                                finalFile = mergedOut
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                }
             }
 
-            val finalFile = downloadedFiles?.maxByOrNull { it.lastModified() }
             if (finalFile == null || !finalFile.exists() || finalFile.length() == 0L) {
                 val fileError = DownloadError.Generic(
                     msg = "Download finished, but output file was not found or is empty.",

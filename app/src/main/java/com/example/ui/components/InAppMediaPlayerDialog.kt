@@ -1,7 +1,6 @@
 package com.example.ui.components
 
 import android.content.Context
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -18,7 +17,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,8 +37,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -64,6 +60,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,13 +94,14 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Modern In-App Media Player Dialog powered by AndroidX Media3 ExoPlayer.
+ * Production-ready in-app media player dialog powered by AndroidX Media3 ExoPlayer.
  *
- * Guarantees:
- * 1. Play/Pause preserves current playback position (resumes from 00:25 -> 00:26).
- * 2. Accurate video duration reading (displays 00:25 / 01:00, never '-:--').
- * 3. Exact UI controls synchronization with real-time player states.
- * 4. Fast forward (+10s), rewind (-10s), double-tap seek, speed control, loop, and fullscreen.
+ * Architecture Principles:
+ * 1. Single ExoPlayer lifecycle managed strictly per mediaUri.
+ * 2. Media3 ExoPlayer timeline as the single source of truth for duration & position.
+ * 3. Play/Pause resumes cleanly without resetting position.
+ * 4. rememberSaveable preserves currentPositionMs across recompositions & fullscreen toggles.
+ * 5. Seeking and scrubbing guarded against uninitialized or zero durations.
  */
 @Composable
 fun InAppMediaPlayerDialog(
@@ -115,7 +113,7 @@ fun InAppMediaPlayerDialog(
     val context = LocalContext.current
     var isFullscreen by remember { mutableStateOf(false) }
 
-    // Resolve media URI safely from ContentResolver or File
+    // Resolve media URI safely: prefer contentUri first, then absolute file path
     val mediaUri = remember(contentUri, mediaPath) {
         when {
             !contentUri.isNullOrBlank() -> Uri.parse(contentUri)
@@ -131,12 +129,10 @@ fun InAppMediaPlayerDialog(
         }
     }
 
-    // Try reading metadata duration immediately from container header
-    val initialMetadataDuration = remember(contentUri, mediaPath) {
-        extractMediaDuration(context, contentUri, mediaPath)
-    }
+    // Persist playback position across recompositions and screen state changes for this specific URI
+    var savedPositionMs by rememberSaveable(mediaUri?.toString()) { mutableLongStateOf(0L) }
 
-    // Persistent single ExoPlayer instance for this dialog
+    // Single ExoPlayer instance instantiated once per mediaUri
     val exoPlayer = remember(mediaUri) {
         if (mediaUri != null) {
             val audioAttributes = AudioAttributes.Builder()
@@ -149,12 +145,15 @@ fun InAppMediaPlayerDialog(
                 .build().apply {
                     setMediaItem(MediaItem.fromUri(mediaUri))
                     prepare()
+                    if (savedPositionMs > 0L) {
+                        seekTo(savedPositionMs)
+                    }
                     playWhenReady = true
                 }
         } else null
     }
 
-    // Release player strictly on Dialog disposal
+    // Release player strictly when this Dialog leaves the composition hierarchy
     DisposableEffect(exoPlayer) {
         onDispose {
             exoPlayer?.release()
@@ -164,14 +163,15 @@ fun InAppMediaPlayerDialog(
     // High-level playback state observables
     var isPlaying by remember { mutableStateOf(exoPlayer?.isPlaying ?: false) }
     var playbackState by remember { mutableIntStateOf(exoPlayer?.playbackState ?: Player.STATE_IDLE) }
-    var currentPosition by remember { mutableLongStateOf(0L) }
-    var duration by remember { mutableLongStateOf(if (initialMetadataDuration > 0) initialMetadataDuration else 0L) }
+    var currentPosition by remember { mutableLongStateOf(savedPositionMs) }
+    var durationMs by remember { mutableLongStateOf(0L) }
+    var isDurationReady by remember { mutableStateOf(false) }
     var videoAspectRatio by remember { mutableFloatStateOf(16f / 9f) }
-    var errorMessage by remember { mutableStateOf<String?>(if (exoPlayer == null) "Could not load video source" else null) }
+    var errorMessage by remember { mutableStateOf<String?>(if (exoPlayer == null) "Could not load media source" else null) }
 
     // Interactive UI controls state
     var isSeeking by remember { mutableStateOf(false) }
-    var seekPreviewPosition by remember { mutableFloatStateOf(0f) }
+    var seekPreviewFraction by remember { mutableFloatStateOf(0f) }
     var volume by remember { mutableFloatStateOf(1.0f) }
     var isMuted by remember { mutableStateOf(false) }
     var isLooping by remember { mutableStateOf(false) }
@@ -181,7 +181,7 @@ fun InAppMediaPlayerDialog(
     var lastUserInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var doubleTapSeekFeedback by remember { mutableStateOf<String?>(null) }
 
-    // Register ExoPlayer Listener for comprehensive real-time synchronization
+    // Synchronize ExoPlayer events with UI state
     DisposableEffect(exoPlayer) {
         if (exoPlayer == null) return@DisposableEffect onDispose {}
 
@@ -193,15 +193,17 @@ fun InAppMediaPlayerDialog(
             override fun onPlaybackStateChanged(state: Int) {
                 playbackState = state
                 val dur = exoPlayer.duration
-                if (dur != C.TIME_UNSET && dur > 0) {
-                    duration = dur
+                if (dur != C.TIME_UNSET && dur > 0L) {
+                    durationMs = dur
+                    isDurationReady = true
                 }
             }
 
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 val dur = exoPlayer.duration
-                if (dur != C.TIME_UNSET && dur > 0) {
-                    duration = dur
+                if (dur != C.TIME_UNSET && dur > 0L) {
+                    durationMs = dur
+                    isDurationReady = true
                 }
             }
 
@@ -209,8 +211,9 @@ fun InAppMediaPlayerDialog(
                 isPlaying = player.isPlaying
                 playbackState = player.playbackState
                 val dur = player.duration
-                if (dur != C.TIME_UNSET && dur > 0) {
-                    duration = dur
+                if (dur != C.TIME_UNSET && dur > 0L) {
+                    durationMs = dur
+                    isDurationReady = true
                 }
             }
 
@@ -228,12 +231,13 @@ fun InAppMediaPlayerDialog(
 
         exoPlayer.addListener(listener)
 
-        // Seed current player state immediately
+        // Seed initial values
         isPlaying = exoPlayer.isPlaying
         playbackState = exoPlayer.playbackState
         val dur = exoPlayer.duration
-        if (dur != C.TIME_UNSET && dur > 0) {
-            duration = dur
+        if (dur != C.TIME_UNSET && dur > 0L) {
+            durationMs = dur
+            isDurationReady = true
         }
 
         onDispose {
@@ -241,25 +245,28 @@ fun InAppMediaPlayerDialog(
         }
     }
 
-    // High-precision timeline & duration polling loop (100ms interval)
+    // Periodic timeline synchronization (200ms interval for smooth Compose updates)
     LaunchedEffect(exoPlayer) {
         while (isActive) {
             exoPlayer?.let { player ->
                 if (!isSeeking) {
-                    currentPosition = player.currentPosition.coerceAtLeast(0L)
+                    val pos = player.currentPosition.coerceAtLeast(0L)
+                    currentPosition = pos
+                    savedPositionMs = pos
                 }
                 val dur = player.duration
-                if (dur != C.TIME_UNSET && dur > 0 && dur != duration) {
-                    duration = dur
+                if (dur != C.TIME_UNSET && dur > 0L && dur != durationMs) {
+                    durationMs = dur
+                    isDurationReady = true
                 }
                 isPlaying = player.isPlaying
                 playbackState = player.playbackState
             }
-            delay(100)
+            delay(200)
         }
     }
 
-    // Auto-hide HUD controls after 3.5 seconds of user inactivity when playing
+    // Auto-hide HUD controls after 3.5 seconds of inactivity while playing
     LaunchedEffect(areControlsVisible, isPlaying, lastUserInteractionTime) {
         if (areControlsVisible && isPlaying) {
             delay(3500)
@@ -277,7 +284,8 @@ fun InAppMediaPlayerDialog(
         triggerInteraction()
         exoPlayer?.let { player ->
             if (player.playbackState == Player.STATE_ENDED) {
-                player.seekTo(0)
+                player.seekTo(0L)
+                savedPositionMs = 0L
                 player.play()
             } else if (player.isPlaying) {
                 player.pause()
@@ -291,10 +299,11 @@ fun InAppMediaPlayerDialog(
         triggerInteraction()
         exoPlayer?.let { player ->
             val cur = player.currentPosition
-            val maxDur = if (duration > 0) duration else Long.MAX_VALUE
+            val maxDur = if (durationMs > 0L) durationMs else if (player.duration > 0L && player.duration != C.TIME_UNSET) player.duration else Long.MAX_VALUE
             val target = (cur + offsetMs).coerceIn(0L, maxDur)
             player.seekTo(target)
             currentPosition = target
+            savedPositionMs = target
             if (player.playbackState == Player.STATE_ENDED && offsetMs < 0) {
                 player.play()
             }
@@ -319,7 +328,7 @@ fun InAppMediaPlayerDialog(
 
     val displayTitle = title.ifBlank { stringResource(R.string.media_player_title) }
 
-    // Single unified Dialog container for seamless fullscreen and windowed playback
+    // Dialog window containing player
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -339,7 +348,6 @@ fun InAppMediaPlayerDialog(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            // Player Container (Card in windowed mode, Fullscreen in expanded mode)
             val containerModifier = if (isFullscreen) {
                 Modifier.fillMaxSize()
             } else {
@@ -700,13 +708,13 @@ fun InAppMediaPlayerDialog(
                         ) {
                             // Timeline Progress Slider
                             val effectivePosition = if (isSeeking) {
-                                (seekPreviewPosition * (if (duration > 0) duration else 1L)).toLong()
+                                (seekPreviewFraction * (if (durationMs > 0L) durationMs else 1L)).toLong()
                             } else {
                                 currentPosition
                             }
 
-                            val progressFraction = if (duration > 0) {
-                                (effectivePosition.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                            val progressFraction = if (durationMs > 0L) {
+                                (effectivePosition.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
                             } else {
                                 0f
                             }
@@ -716,21 +724,26 @@ fun InAppMediaPlayerDialog(
                                 onValueChange = { frac ->
                                     triggerInteraction()
                                     isSeeking = true
-                                    seekPreviewPosition = frac
+                                    seekPreviewFraction = frac
                                 },
                                 onValueChangeFinished = {
-                                    if (duration > 0) {
-                                        val targetMs = (seekPreviewPosition * duration).toLong().coerceIn(0L, duration)
+                                    if (durationMs > 0L) {
+                                        val targetMs = (seekPreviewFraction * durationMs).toLong().coerceIn(0L, durationMs)
                                         exoPlayer?.seekTo(targetMs)
                                         currentPosition = targetMs
+                                        savedPositionMs = targetMs
                                     }
                                     isSeeking = false
                                     triggerInteraction()
                                 },
+                                enabled = isDurationReady && durationMs > 0L,
                                 colors = SliderDefaults.colors(
                                     thumbColor = MaterialTheme.colorScheme.primary,
                                     activeTrackColor = MaterialTheme.colorScheme.primary,
-                                    inactiveTrackColor = Color.White.copy(alpha = 0.35f)
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.35f),
+                                    disabledThumbColor = Color.White.copy(alpha = 0.4f),
+                                    disabledActiveTrackColor = Color.White.copy(alpha = 0.3f),
+                                    disabledInactiveTrackColor = Color.White.copy(alpha = 0.15f)
                                 ),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -742,9 +755,13 @@ fun InAppMediaPlayerDialog(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Current Elapsed / Total Duration Text
                                 val currentFormatted = formatDuration(effectivePosition)
-                                val durationFormatted = if (duration > 0) formatDuration(duration) else formatDuration(0)
+                                val durationFormatted = if (isDurationReady && durationMs > 0L) {
+                                    formatDuration(durationMs)
+                                } else {
+                                    "--:--"
+                                }
+
                                 Text(
                                     text = "$currentFormatted / $durationFormatted",
                                     color = Color.White,
@@ -808,45 +825,7 @@ fun InAppMediaPlayerDialog(
 }
 
 /**
- * Extracts accurate media duration from video file header using MediaMetadataRetriever and FileDescriptors.
- */
-private fun extractMediaDuration(context: Context, contentUri: String?, mediaPath: String?): Long {
-    val retriever = MediaMetadataRetriever()
-    return try {
-        if (!contentUri.isNullOrBlank()) {
-            val uri = Uri.parse(contentUri)
-            try {
-                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    retriever.setDataSource(pfd.fileDescriptor)
-                } ?: run {
-                    retriever.setDataSource(context, uri)
-                }
-            } catch (_: Throwable) {
-                retriever.setDataSource(context, uri)
-            }
-        } else if (!mediaPath.isNullOrBlank()) {
-            val file = File(mediaPath)
-            if (file.exists()) {
-                retriever.setDataSource(file.absolutePath)
-            } else {
-                return 0L
-            }
-        } else {
-            return 0L
-        }
-        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-        durationStr?.toLongOrNull() ?: 0L
-    } catch (_: Throwable) {
-        0L
-    } finally {
-        try {
-            retriever.release()
-        } catch (_: Throwable) {}
-    }
-}
-
-/**
- * Formats milliseconds into clean string representations:
+ * Formats milliseconds into standard duration strings:
  * - 00:25 (25 seconds)
  * - 01:00 (1 minute)
  * - 10:35 (10 minutes 35 seconds)

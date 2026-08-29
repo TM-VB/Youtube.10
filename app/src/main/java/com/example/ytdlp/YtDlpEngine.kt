@@ -371,31 +371,39 @@ object YtDlpEngine {
 
             var finalFile = downloadedFiles.maxByOrNull { it.lastModified() }
 
-            // If yt-dlp saved separate video and audio streams, merge them with FFmpeg
+            // If yt-dlp saved separate unmerged video and audio streams, merge them with FFmpeg
             if (!isAudioOnly && downloadedFiles.size > 1) {
-                val videoCandidates = downloadedFiles.filter {
+                // Check if an already combined complete video exists
+                val hasCompletedCombinedVideo = downloadedFiles.any {
                     val ext = it.extension.lowercase()
-                    ext == "mp4" || ext == "webm" || ext == "mkv"
-                }
-                val audioCandidates = downloadedFiles.filter {
-                    val ext = it.extension.lowercase()
-                    ext == "m4a" || ext == "mp3" || ext == "opus" || ext == "aac" || ext == "ogg"
+                    (ext == "mp4" || ext == "mkv") && !it.name.contains(".f") && it.length() > 1024L
                 }
 
-                val primaryVideo = videoCandidates.maxByOrNull { it.length() }
-                val primaryAudio = audioCandidates.maxByOrNull { it.length() }
+                if (!hasCompletedCombinedVideo) {
+                    val videoCandidates = downloadedFiles.filter {
+                        val ext = it.extension.lowercase()
+                        ext == "mp4" || ext == "webm" || ext == "mkv"
+                    }
+                    val audioCandidates = downloadedFiles.filter {
+                        val ext = it.extension.lowercase()
+                        ext == "m4a" || ext == "mp3" || ext == "opus" || ext == "aac" || ext == "ogg"
+                    }
 
-                if (primaryVideo != null && primaryAudio != null && primaryVideo != primaryAudio) {
-                    val mergedOut = File(workDir, "merged_${System.currentTimeMillis()}.mp4")
-                    try {
-                        val ffmpegMgr = com.example.downloader.ffmpeg.FFmpegManager(context)
-                        val mergeResult = kotlinx.coroutines.runBlocking {
-                            ffmpegMgr.mergeVideoAudio(primaryVideo, primaryAudio, mergedOut)
-                        }
-                        if (mergeResult.isSuccess && mergedOut.exists() && mergedOut.length() > 0) {
-                            finalFile = mergedOut
-                        }
-                    } catch (_: Throwable) {}
+                    val primaryVideo = videoCandidates.maxByOrNull { it.length() }
+                    val primaryAudio = audioCandidates.maxByOrNull { it.length() }
+
+                    if (primaryVideo != null && primaryAudio != null && primaryVideo != primaryAudio) {
+                        val mergedOut = File(workDir, "merged_${System.currentTimeMillis()}.mp4")
+                        try {
+                            val ffmpegMgr = com.example.downloader.ffmpeg.FFmpegManager(context)
+                            val mergeResult = kotlinx.coroutines.runBlocking {
+                                ffmpegMgr.mergeVideoAudio(primaryVideo, primaryAudio, mergedOut)
+                            }
+                            if (mergeResult.isSuccess && mergedOut.exists() && mergedOut.length() > 0) {
+                                finalFile = mergedOut
+                            }
+                        } catch (_: Throwable) {}
+                    }
                 }
             }
 

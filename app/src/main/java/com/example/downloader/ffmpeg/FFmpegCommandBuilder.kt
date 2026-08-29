@@ -23,11 +23,13 @@ object FFmpegCommandBuilder {
         val args = mutableListOf(
             binaryPath,
             "-y",
+            "-fflags", "+genpts",
             "-i", videoFile.absolutePath,
             "-i", audioFile.absolutePath,
             "-map", "0:v:0?",
             "-map", "1:a:0?",
-            "-c:v", "copy"
+            "-c:v", "copy",
+            "-avoid_negative_ts", "make_zero"
         )
 
         // Audio codec handling for container
@@ -115,7 +117,8 @@ object FFmpegCommandBuilder {
             "-preset", "veryfast",
             "-crf", "22",
             "-c:a", "aac",
-            "-b:a", "192k"
+            "-b:a", "192k",
+            "-avoid_negative_ts", "make_zero"
         )
 
         if (isMp4) {
