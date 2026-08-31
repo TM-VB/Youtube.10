@@ -503,13 +503,21 @@ class DownloadQueueManager(
 
         result.fold(
             onSuccess = { (uri, path) ->
-                val completedTask = repository.getTaskByIdSync(taskId)?.copy(
+                val current = repository.getTaskByIdSync(taskId)
+                val finalFileSize = if (!path.isNullOrBlank()) {
+                    val f = File(path)
+                    if (f.exists()) CleanupManager.formatFileSize(f.length()) else ""
+                } else ""
+
+                val completedTask = current?.copy(
                     status = DownloadStatus.COMPLETED,
                     progress = 100f,
                     contentUri = uri?.toString(),
                     filePath = path,
                     downloadSpeed = "",
                     eta = "",
+                    downloadedSize = if (current.downloadedSize.isNotBlank()) current.downloadedSize else finalFileSize,
+                    totalSize = if (current.totalSize.isNotBlank()) current.totalSize else finalFileSize,
                     completedAt = System.currentTimeMillis()
                 )
                 if (completedTask != null) {
@@ -607,7 +615,9 @@ class DownloadQueueManager(
                 status = status,
                 progress = progressUpdate.progress,
                 downloadSpeed = speedText,
-                eta = etaFormatted
+                eta = etaFormatted,
+                downloadedSize = progressUpdate.downloadedBytesText,
+                totalSize = progressUpdate.totalBytesText
             )
 
             // Throttle foreground service notifications: update at most once per 1000ms per task or when complete

@@ -161,10 +161,19 @@ fun DownloadDetailsDialog(
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val progressText = when {
+                                task.downloadedSize.isNotBlank() && task.totalSize.isNotBlank() ->
+                                    "${task.progress.toInt()}% (${task.downloadedSize} / ${task.totalSize})"
+                                task.downloadedSize.isNotBlank() ->
+                                    "${task.progress.toInt()}% (${task.downloadedSize})"
+                                else ->
+                                    "${task.progress.toInt()}%"
+                            }
                             Text(
-                                text = "${task.progress.toInt()}%",
+                                text = progressText,
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold
                             )

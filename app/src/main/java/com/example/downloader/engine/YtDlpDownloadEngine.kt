@@ -75,15 +75,25 @@ class YtDlpDownloadEngine(
                 } else ""
 
                 val (downloadedBytesStr, totalBytesStr) = extractSizes(rawLine)
+                val downloadedBytes = parseByteString(downloadedBytesStr)
+                val totalBytes = parseByteString(totalBytesStr)
+
+                val calculatedProgress = if (totalBytes > 0L && downloadedBytes > 0L) {
+                    ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
+                } else {
+                    progress.coerceIn(0f, 100f)
+                }
 
                 val progressObj = DownloadProgress(
                     taskId = taskId,
-                    progressPercentage = progress.coerceIn(0f, 100f),
+                    progressPercentage = calculatedProgress,
                     speed = speed,
                     eta = etaFormatted,
+                    totalBytes = totalBytes,
+                    downloadedBytes = downloadedBytes,
                     statusText = if (downloadedBytesStr.isNotBlank() && totalBytesStr.isNotBlank()) {
                         "$downloadedBytesStr / $totalBytesStr"
-                    } else ""
+                    } else downloadedBytesStr
                 )
                 onProgress(progressObj)
             }
@@ -146,12 +156,10 @@ class YtDlpDownloadEngine(
 
             Result.success(finalFile)
         } catch (e: YoutubeDLException) {
-            cleanupWorkDir(workDir)
             val domainError = YtDlpErrorMapper.map(e)
             YtDlpLogger.logDownloadError(taskId, domainError, System.currentTimeMillis() - startTimeMs)
             Result.failure(domainError)
         } catch (e: Throwable) {
-            cleanupWorkDir(workDir)
             val domainError = YtDlpErrorMapper.map(e)
             YtDlpLogger.logDownloadError(taskId, domainError, System.currentTimeMillis() - startTimeMs)
             Result.failure(domainError)
@@ -183,9 +191,6 @@ class YtDlpDownloadEngine(
                 YtDlpLogger.logDownloadCancelled(taskId, 0L)
                 YoutubeDL.getInstance().destroyProcessById(taskId)
                 ffmpegManager?.cancel(taskId)
-
-                val workDir = File(MediaStoreHelper.getTempDownloadDir(context), taskId)
-                cleanupWorkDir(workDir)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -275,8 +280,25 @@ class YtDlpDownloadEngine(
     private fun extractSizes(line: String): Pair<String, String> {
         val matcher = sizePattern.matcher(line)
         return if (matcher.find()) {
-            Pair(matcher.group(1).orEmpty(), matcher.group(2).orEmpty())
+            Pair(matcher.group(1).orEmpty().trim(), matcher.group(2).orEmpty().trim())
         } else Pair("", "")
+    }
+
+    private fun parseByteString(sizeStr: String): Long {
+        if (sizeStr.isBlank()) return 0L
+        val pattern = Pattern.compile("""(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?""")
+        val matcher = pattern.matcher(sizeStr.trim())
+        if (!matcher.find()) return 0L
+        val value = matcher.group(1)?.toDoubleOrNull() ?: return 0L
+        val unit = matcher.group(2)?.lowercase() ?: ""
+
+        return when {
+            unit.startsWith("kib") || unit == "kb" || unit == "k" -> (value * 1024).toLong()
+            unit.startsWith("mib") || unit == "mb" || unit == "m" -> (value * 1024 * 1024).toLong()
+            unit.startsWith("gib") || unit == "gb" || unit == "g" -> (value * 1024 * 1024 * 1024).toLong()
+            unit.startsWith("tib") || unit == "tb" || unit == "t" -> (value * 1024L * 1024L * 1024L * 1024L).toLong()
+            else -> value.toLong()
+        }
     }
 
     private fun cleanupWorkDir(workDir: File) {

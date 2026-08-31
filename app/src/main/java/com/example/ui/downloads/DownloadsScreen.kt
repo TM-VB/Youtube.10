@@ -477,10 +477,19 @@ fun DownloadTaskCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val progressLabel = when {
+                        task.downloadedSize.isNotBlank() && task.totalSize.isNotBlank() ->
+                            "${task.progress.toInt()}% (${task.downloadedSize} / ${task.totalSize})"
+                        task.downloadedSize.isNotBlank() ->
+                            "${task.progress.toInt()}% (${task.downloadedSize})"
+                        else ->
+                            "${task.progress.toInt()}%"
+                    }
                     Text(
-                        text = "${task.progress.toInt()}%",
+                        text = progressLabel,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold
                     )

@@ -25,13 +25,19 @@ data class ProgressUpdate(
     val progress: Float,
     val etaSeconds: Long,
     val speedText: String,
-    val rawLine: String
+    val rawLine: String,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val downloadedBytesText: String = "",
+    val totalBytesText: String = ""
 )
 
 object YtDlpEngine {
 
     private var isInitialized = false
     private val SPEED_PATTERN = Pattern.compile("""(\d+(?:\.\d+)?\s*(?:[kKMGT]?i?[bB])/s)""")
+    private val SIZE_OF_PATTERN = Pattern.compile("""(\d+(?:\.\d+)?\s*(?:[kKMGT]?i?[bB]))\s*of\s*(?:~?\s*)(\d+(?:\.\d+)?\s*(?:[kKMGT]?i?[bB]))""")
+    private val SINGLE_SIZE_PATTERN = Pattern.compile("""(\d+(?:\.\d+)?\s*(?:[kKMGT]?i?[bB]))\s+at""")
 
     fun init(context: Context): Result<Unit> {
         if (isInitialized) return Result.success(Unit)
@@ -353,15 +359,8 @@ object YtDlpEngine {
             }
 
             YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, line ->
-                val speed = extractSpeed(line)
-                onProgress(
-                    ProgressUpdate(
-                        progress = progress.coerceIn(0f, 100f),
-                        etaSeconds = etaInSeconds,
-                        speedText = speed,
-                        rawLine = line.orEmpty()
-                    )
-                )
+                val progressDetails = extractProgressDetails(line, progress, etaInSeconds)
+                onProgress(progressDetails)
             }
 
             // Locate final downloaded files in workDir
@@ -461,7 +460,71 @@ object YtDlpEngine {
         if (line.isNullOrBlank()) return ""
         val matcher = SPEED_PATTERN.matcher(line)
         return if (matcher.find()) {
-            matcher.group(1).orEmpty()
+            matcher.group(1).orEmpty().trim()
         } else ""
+    }
+
+    private fun parseByteString(sizeStr: String): Long {
+        val clean = sizeStr.trim()
+        val pattern = Pattern.compile("""(\d+(?:\.\d+)?)\s*([a-zA-Z]+)?""")
+        val matcher = pattern.matcher(clean)
+        if (!matcher.find()) return 0L
+        val value = matcher.group(1)?.toDoubleOrNull() ?: return 0L
+        val unit = matcher.group(2)?.lowercase() ?: ""
+
+        return when {
+            unit.startsWith("kib") || unit == "kb" || unit == "k" -> (value * 1024).toLong()
+            unit.startsWith("mib") || unit == "mb" || unit == "m" -> (value * 1024 * 1024).toLong()
+            unit.startsWith("gib") || unit == "gb" || unit == "g" -> (value * 1024 * 1024 * 1024).toLong()
+            unit.startsWith("tib") || unit == "tb" || unit == "t" -> (value * 1024L * 1024L * 1024L * 1024L).toLong()
+            else -> value.toLong()
+        }
+    }
+
+    private fun extractProgressDetails(
+        line: String?,
+        callbackProgress: Float,
+        etaInSeconds: Long
+    ): ProgressUpdate {
+        val raw = line.orEmpty()
+        val speed = extractSpeed(raw)
+        var downloadedBytes = 0L
+        var totalBytes = 0L
+        var downloadedText = ""
+        var totalText = ""
+        var calculatedProgress = callbackProgress.coerceIn(0f, 100f)
+
+        if (raw.isNotBlank()) {
+            val sizeOfMatcher = SIZE_OF_PATTERN.matcher(raw)
+            if (sizeOfMatcher.find()) {
+                downloadedText = sizeOfMatcher.group(1).orEmpty().trim()
+                totalText = sizeOfMatcher.group(2).orEmpty().trim()
+                downloadedBytes = parseByteString(downloadedText)
+                totalBytes = parseByteString(totalText)
+
+                if (totalBytes > 0L && downloadedBytes > 0L) {
+                    calculatedProgress = ((downloadedBytes.toDouble() / totalBytes.toDouble()) * 100.0)
+                        .toFloat()
+                        .coerceIn(0f, 100f)
+                }
+            } else {
+                val singleSizeMatcher = SINGLE_SIZE_PATTERN.matcher(raw)
+                if (singleSizeMatcher.find()) {
+                    downloadedText = singleSizeMatcher.group(1).orEmpty().trim()
+                    downloadedBytes = parseByteString(downloadedText)
+                }
+            }
+        }
+
+        return ProgressUpdate(
+            progress = calculatedProgress,
+            etaSeconds = etaInSeconds,
+            speedText = speed,
+            rawLine = raw,
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            downloadedBytesText = downloadedText,
+            totalBytesText = totalText
+        )
     }
 }

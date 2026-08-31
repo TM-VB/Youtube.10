@@ -35,8 +35,16 @@ interface DownloadTaskDao {
     @Update
     suspend fun updateTask(task: DownloadTaskEntity)
 
-    @Query("UPDATE download_tasks SET status = :status, progress = :progress, downloadSpeed = :downloadSpeed, eta = :eta WHERE id = :id")
-    suspend fun updateProgress(id: String, status: DownloadStatus, progress: Float, downloadSpeed: String, eta: String)
+    @Query("UPDATE download_tasks SET status = :status, progress = :progress, downloadSpeed = :downloadSpeed, eta = :eta, downloadedSize = CASE WHEN :downloadedSize != '' THEN :downloadedSize ELSE downloadedSize END, totalSize = CASE WHEN :totalSize != '' THEN :totalSize ELSE totalSize END WHERE id = :id")
+    suspend fun updateProgress(
+        id: String,
+        status: DownloadStatus,
+        progress: Float,
+        downloadSpeed: String,
+        eta: String,
+        downloadedSize: String = "",
+        totalSize: String = ""
+    )
 
     @Query("SELECT * FROM download_tasks WHERE url = :url AND formatId = :formatId AND (((startTime IS NULL OR startTime = '') AND (:startTime IS NULL OR :startTime = '')) OR startTime = :startTime) AND (((endTime IS NULL OR endTime = '') AND (:endTime IS NULL OR :endTime = '')) OR endTime = :endTime) LIMIT 1")
     suspend fun findExistingTask(url: String, formatId: String, startTime: String?, endTime: String?): DownloadTaskEntity?
