@@ -77,6 +77,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.media.MediaMetadataRetriever
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.AudioAttributes
@@ -87,8 +88,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.ui.PlayerView
 import com.example.R
+import com.example.storage.MediaStoreHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.io.File
@@ -98,14 +103,41 @@ private const val TAG_PLAYER = "PLAYER_DEBUG"
 private const val TAG_MEDIA_FILE = "MEDIA_FILE_DEBUG"
 
 /**
+ * Extracts accurate media duration in milliseconds using Android's native MediaMetadataRetriever.
+ */
+fun extractMediaDuration(context: Context, uri: Uri?, filePath: String?): Long {
+    var retriever: MediaMetadataRetriever? = null
+    try {
+        retriever = MediaMetadataRetriever()
+        if (!filePath.isNullOrBlank() && File(filePath).exists()) {
+            retriever.setDataSource(filePath)
+        } else if (uri != null) {
+            retriever.setDataSource(context, uri)
+        } else {
+            return 0L
+        }
+        val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        return durationStr?.toLongOrNull() ?: 0L
+    } catch (e: Exception) {
+        Log.w(TAG_MEDIA_FILE, "MediaMetadataRetriever duration failed: ${e.message}")
+        return 0L
+    } finally {
+        try {
+            retriever?.release()
+        } catch (_: Exception) {}
+    }
+}
+
+/**
  * Production-ready in-app media player dialog powered by AndroidX Media3 ExoPlayer.
  *
  * Architecture Principles:
- * 1. Single ExoPlayer lifecycle managed strictly per mediaUri.
- * 2. Media3 ExoPlayer timeline as the single source of truth for duration & position.
- * 3. Play/Pause resumes cleanly without resetting position.
- * 4. rememberSaveable preserves currentPositionMs across recompositions & fullscreen toggles.
- * 5. Seeking and scrubbing guarded against uninitialized or zero durations.
+ * 1. Prioritizes direct file URI whenever the local media file exists on disk to enable instant RandomAccessFile seeking.
+ * 2. Pre-extracts duration via MediaMetadataRetriever so total duration displays immediately.
+ * 3. Configures DefaultExtractorsFactory with constant-bitrate seeking and MP4 workaround flags.
+ * 4. Play/Pause resumes cleanly without resetting position.
+ * 5. rememberSaveable preserves currentPositionMs across recompositions & fullscreen toggles.
+ * 6. Seeking and scrubbing guarded against uninitialized or zero durations.
  */
 @Composable
 fun InAppMediaPlayerDialog(
@@ -117,9 +149,13 @@ fun InAppMediaPlayerDialog(
     val context = LocalContext.current
     var isFullscreen by remember { mutableStateOf(false) }
 
-    // Resolve media URI safely: prefer contentUri first, then absolute file path
+    // Resolve media URI safely: prefer direct file URI first for fast random access, then content URI
     val mediaUri = remember(contentUri, mediaPath) {
+        val directFile = mediaPath?.let { File(it) }
         val resolved = when {
+            directFile != null && directFile.exists() && directFile.length() > 0L -> {
+                Uri.fromFile(directFile)
+            }
             !contentUri.isNullOrBlank() -> Uri.parse(contentUri)
             !mediaPath.isNullOrBlank() -> {
                 if (mediaPath.startsWith("content://") || mediaPath.startsWith("file://")) {
@@ -157,10 +193,15 @@ fun InAppMediaPlayerDialog(
         resolved
     }
 
+    // Pre-extract actual media duration using MediaMetadataRetriever
+    val precomputedDurationMs = remember(mediaUri, mediaPath, contentUri) {
+        extractMediaDuration(context, mediaUri, mediaPath)
+    }
+
     // Persist playback position across recompositions and screen state changes for this specific URI
     var savedPositionMs by rememberSaveable(mediaUri?.toString()) { mutableLongStateOf(0L) }
 
-    // Single ExoPlayer instance instantiated once per mediaUri
+    // Single ExoPlayer instance instantiated once per mediaUri with extractors enabled for seeking
     val exoPlayer = remember(mediaUri) {
         if (mediaUri != null) {
             val audioAttributes = AudioAttributes.Builder()
@@ -168,16 +209,33 @@ fun InAppMediaPlayerDialog(
                 .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
-            ExoPlayer.Builder(context)
+            val extractorsFactory = DefaultExtractorsFactory()
+                .setConstantBitrateSeekingEnabled(true)
+                .setMp4ExtractorFlags(
+                    Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS or
+                    Mp4Extractor.FLAG_READ_SEF_DATA
+                )
+
+            val mediaSourceFactory = DefaultMediaSourceFactory(context, extractorsFactory)
+
+            val mimeType = MediaStoreHelper.getMimeType(mediaPath ?: contentUri ?: "")
+            val mediaItem = MediaItem.Builder()
+                .setUri(mediaUri)
+                .setMimeType(mimeType)
+                .build()
+
+            ExoPlayer.Builder(context, mediaSourceFactory)
                 .setAudioAttributes(audioAttributes, true)
+                .setSeekBackIncrementMs(10000L)
+                .setSeekForwardIncrementMs(10000L)
                 .build().apply {
-                    setMediaItem(MediaItem.fromUri(mediaUri))
+                    setMediaItem(mediaItem)
                     prepare()
                     if (savedPositionMs > 0L) {
                         seekTo(savedPositionMs)
                     }
                     playWhenReady = true
-                    Log.d(TAG_PLAYER, "ExoPlayer initialized for URI: $mediaUri with savedPosition=$savedPositionMs")
+                    Log.d(TAG_PLAYER, "ExoPlayer initialized for URI: $mediaUri with savedPosition=$savedPositionMs, precomputedDuration=$precomputedDurationMs")
                 }
         } else {
             Log.e(TAG_PLAYER, "Cannot initialize ExoPlayer: mediaUri is null")
@@ -197,9 +255,9 @@ fun InAppMediaPlayerDialog(
     var isPlaying by remember { mutableStateOf(exoPlayer?.isPlaying ?: false) }
     var playbackState by remember { mutableIntStateOf(exoPlayer?.playbackState ?: Player.STATE_IDLE) }
     var currentPosition by remember { mutableLongStateOf(savedPositionMs) }
-    var durationMs by remember { mutableLongStateOf(0L) }
-    var isDurationReady by remember { mutableStateOf(false) }
-    var isSeekable by remember { mutableStateOf(false) }
+    var durationMs by remember { mutableLongStateOf(precomputedDurationMs.coerceAtLeast(0L)) }
+    var isDurationReady by remember { mutableStateOf(precomputedDurationMs > 0L) }
+    var isSeekable by remember { mutableStateOf(precomputedDurationMs > 0L) }
     var videoAspectRatio by remember { mutableFloatStateOf(16f / 9f) }
     var errorMessage by remember { mutableStateOf<String?>(if (exoPlayer == null) "Could not load media source" else null) }
 
@@ -784,7 +842,7 @@ fun InAppMediaPlayerDialog(
                                     seekPreviewFraction = frac
                                 },
                                 onValueChangeFinished = {
-                                    if (durationMs > 0L && isSeekable) {
+                                    if (durationMs > 0L) {
                                         val targetMs = (seekPreviewFraction * durationMs).toLong().coerceIn(0L, durationMs)
                                         Log.d(TAG_PLAYER, "SEEK from=${exoPlayer?.currentPosition} to=$targetMs")
                                         exoPlayer?.seekTo(targetMs)
@@ -794,7 +852,7 @@ fun InAppMediaPlayerDialog(
                                     isSeeking = false
                                     triggerInteraction()
                                 },
-                                enabled = isDurationReady && durationMs > 0L && isSeekable,
+                                enabled = (durationMs > 0L) && (isSeekable || isDurationReady),
                                 colors = SliderDefaults.colors(
                                     thumbColor = MaterialTheme.colorScheme.primary,
                                     activeTrackColor = MaterialTheme.colorScheme.primary,

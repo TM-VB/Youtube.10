@@ -335,6 +335,7 @@ object YtDlpEngine {
                     addOption("-f", selector)
                     addOption("-x") // extract audio
                     addOption("--audio-format", "mp3")
+                    addOption("--embed-metadata")
                 } else {
                     if (formatId.isNotBlank() && formatId != "best") {
                         if (formatId.contains("+") || formatId.contains("/")) {
@@ -347,6 +348,8 @@ object YtDlpEngine {
                         addOption("-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b")
                     }
                     addOption("--merge-output-format", "mp4")
+                    addOption("--embed-metadata")
+                    addOption("--ppa", "Merger+ffmpeg_o:-movflags +faststart")
                 }
 
                 // Time trimming section
