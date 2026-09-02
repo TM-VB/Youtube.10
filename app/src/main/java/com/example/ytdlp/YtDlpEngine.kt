@@ -53,16 +53,33 @@ object YtDlpEngine {
 
     fun isReady(): Boolean = isInitialized
 
-    private fun applyCookies(context: Context?, request: YoutubeDLRequest) {
-        if (context == null) return
-        try {
+    private fun applyCookies(context: Context?, request: YoutubeDLRequest): File? {
+        if (context == null) return null
+        return try {
             val cookies = com.example.data.settings.AppSettings.getInstance(context).cookiesContent.value
             if (cookies.isNotBlank()) {
-                val cookiesFile = File(context.cacheDir, "yt_cookies.txt")
-                cookiesFile.writeText(cookies)
+                val secureDir = File(context.cacheDir, ".secure_cookies").apply {
+                    if (!exists()) {
+                        mkdirs()
+                        setReadable(true, true)
+                        setWritable(true, true)
+                        setExecutable(false, false)
+                    }
+                }
+                val cookiesFile = File(secureDir, "yt_cookies_${System.currentTimeMillis()}_${java.util.UUID.randomUUID().toString().take(8)}.txt").apply {
+                    writeText(cookies)
+                    setReadable(true, true)
+                    setWritable(true, true)
+                    deleteOnExit()
+                }
                 request.addOption("--cookies", cookiesFile.absolutePath)
+                cookiesFile
+            } else {
+                null
             }
-        } catch (_: Throwable) {}
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     /**

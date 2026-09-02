@@ -64,14 +64,28 @@ object MediaStoreHelper {
      * Copies a completed download file to the public Movies/DownloadVideos or Music/DownloadVideos directory using MediaStore.
      * Triggers MediaScannerConnection so Android Gallery & Music players instantly generate thumbnails and metadata.
      */
-    fun saveToPublicDownloads(context: Context, sourceFile: File, rawTitle: String): Pair<Uri?, String?> {
+    fun saveToPublicDownloads(
+        context: Context,
+        sourceFile: File,
+        rawTitle: String,
+        customDisplayName: String? = null,
+        customMimeType: String? = null
+    ): Pair<Uri?, String?> {
         if (!sourceFile.exists() || sourceFile.length() < 512L) {
             return Pair(null, null)
         }
 
         val extension = sourceFile.extension.ifBlank { "mp4" }
-        val displayName = FileNameSanitizer.sanitize(rawTitle, extension)
-        val mimeType = getMimeType(displayName)
+        val displayName = if (!customDisplayName.isNullOrBlank()) {
+            customDisplayName
+        } else {
+            FileNameSanitizer.sanitize(rawTitle, extension)
+        }
+        val mimeType = if (!customMimeType.isNullOrBlank()) {
+            customMimeType
+        } else {
+            getMimeType(displayName)
+        }
         val isVideo = isVideoMime(mimeType)
         val isAudio = isAudioMime(mimeType)
 
@@ -196,21 +210,8 @@ object MediaStoreHelper {
             e.printStackTrace()
         }
 
-        // Fallback: use sourceFile in app cache if valid
-        return if (sourceFile.exists() && sourceFile.length() > 512L) {
-            val fallbackUri = try {
-                FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.provider",
-                    sourceFile
-                )
-            } catch (_: Exception) {
-                null
-            }
-            Pair(fallbackUri, sourceFile.absolutePath)
-        } else {
-            Pair(null, null)
-        }
+        // If MediaStore save or direct public copy failed, return failure so the caller knows persistence failed
+        return Pair(null, null)
     }
 
     /**

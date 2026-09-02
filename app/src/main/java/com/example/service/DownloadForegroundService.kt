@@ -297,23 +297,46 @@ class DownloadForegroundService : Service() {
         }
 
         fun onTaskCompleted(context: Context, taskId: String, title: String, contentUri: String?) {
-            val intent = Intent(context, DownloadForegroundService::class.java).apply {
-                putExtra(EXTRA_TASK_ID, taskId)
-                putExtra(EXTRA_TITLE, title)
-                putExtra(EXTRA_CONTENT_URI, contentUri)
-                putExtra(EXTRA_FINISHED, true)
+            val appSettings = AppSettings.getInstance(context)
+            if (appSettings.showNotifications.value) {
+                try {
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    val completedNotification = buildStaticCompletedNotification(context, title, contentUri)
+                    nm.notify(NOTIFICATION_ID_COMPLETED_BASE + taskId.hashCode(), completedNotification)
+                } catch (_: Throwable) {}
             }
-            context.startService(intent)
+
+            // If there are still active downloads, update service state; otherwise stop if running
+            try {
+                val intent = Intent(context, DownloadForegroundService::class.java).apply {
+                    putExtra(EXTRA_TASK_ID, taskId)
+                    putExtra(EXTRA_TITLE, title)
+                    putExtra(EXTRA_CONTENT_URI, contentUri)
+                    putExtra(EXTRA_FINISHED, true)
+                }
+                context.startService(intent)
+            } catch (_: Throwable) {}
         }
 
         fun onTaskFailed(context: Context, taskId: String, title: String, errorMessage: String) {
-            val intent = Intent(context, DownloadForegroundService::class.java).apply {
-                putExtra(EXTRA_TASK_ID, taskId)
-                putExtra(EXTRA_TITLE, title)
-                putExtra(EXTRA_ERROR_MESSAGE, errorMessage)
-                putExtra(EXTRA_FAILED, true)
+            val appSettings = AppSettings.getInstance(context)
+            if (appSettings.showNotifications.value) {
+                try {
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    val failedNotification = buildStaticFailedNotification(context, title, taskId, errorMessage)
+                    nm.notify(NOTIFICATION_ID_FAILED_BASE + taskId.hashCode(), failedNotification)
+                } catch (_: Throwable) {}
             }
-            context.startService(intent)
+
+            try {
+                val intent = Intent(context, DownloadForegroundService::class.java).apply {
+                    putExtra(EXTRA_TASK_ID, taskId)
+                    putExtra(EXTRA_TITLE, title)
+                    putExtra(EXTRA_ERROR_MESSAGE, errorMessage)
+                    putExtra(EXTRA_FAILED, true)
+                }
+                context.startService(intent)
+            } catch (_: Throwable) {}
         }
 
         fun updateOrDismissIfIdle(
@@ -324,14 +347,69 @@ class DownloadForegroundService : Service() {
             progress: Int,
             speed: String
         ) {
-            val intent = Intent(context, DownloadForegroundService::class.java).apply {
-                putExtra(EXTRA_TASK_ID, taskId)
-                putExtra(EXTRA_TITLE, title)
-                putExtra(EXTRA_STATUS, status.name)
-                putExtra(EXTRA_PROGRESS, progress)
-                putExtra(EXTRA_SPEED, speed)
+            try {
+                val intent = Intent(context, DownloadForegroundService::class.java).apply {
+                    putExtra(EXTRA_TASK_ID, taskId)
+                    putExtra(EXTRA_TITLE, title)
+                    putExtra(EXTRA_STATUS, status.name)
+                    putExtra(EXTRA_PROGRESS, progress)
+                    putExtra(EXTRA_SPEED, speed)
+                }
+                context.startService(intent)
+            } catch (_: Throwable) {}
+        }
+
+        private fun buildStaticCompletedNotification(context: Context, title: String, contentUriStr: String?): android.app.Notification {
+            val openIntent = if (!contentUriStr.isNullOrBlank()) {
+                val uri = Uri.parse(contentUriStr)
+                val mimeType = com.example.storage.MediaStoreHelper.resolveMimeType(context, uri, null)
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mimeType)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            } else {
+                Intent(context, MainActivity::class.java)
             }
-            context.startService(intent)
+
+            val pendingIntent = PendingIntent.getActivity(
+                context, 10, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            return NotificationCompat.Builder(context, CHANNEL_ID_COMPLETED)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle(title)
+                .setContentText(context.getString(R.string.notification_completed))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .addAction(android.R.drawable.ic_media_play, context.getString(R.string.btn_open), pendingIntent)
+                .build()
+        }
+
+        private fun buildStaticFailedNotification(context: Context, title: String, taskId: String?, errorMessage: String?): android.app.Notification {
+            val contentIntent = Intent(context, MainActivity::class.java)
+            val pendingIntent = PendingIntent.getActivity(
+                context, 20, contentIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val retryIntent = Intent(context, DownloadForegroundService::class.java).apply {
+                action = ACTION_RETRY
+                putExtra(EXTRA_TASK_ID, taskId)
+            }
+            val retryPendingIntent = PendingIntent.getService(
+                context, 21, retryIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            return NotificationCompat.Builder(context, CHANNEL_ID_COMPLETED)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle(title)
+                .setContentText(errorMessage ?: context.getString(R.string.status_failed))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .addAction(android.R.drawable.ic_menu_rotate, context.getString(R.string.btn_retry), retryPendingIntent)
+                .build()
         }
     }
 }

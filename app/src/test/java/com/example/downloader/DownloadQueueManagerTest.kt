@@ -279,4 +279,71 @@ class DownloadQueueManagerTest {
         val afterClear = repository.getAllCompletedTasksSync()
         assertEquals(0, afterClear.size)
     }
+
+    @Test
+    fun testDatabaseConsistencyMarksMissingFilesAsFailed() = runBlocking {
+        val nonExistentPath = "/storage/emulated/0/DownloadVideos/non_existent_video.mp4"
+        val task = DownloadTaskEntity(
+            id = "missing_file_task",
+            url = "https://youtube.com/watch?v=missing",
+            title = "Missing Video",
+            formatId = "18",
+            formatDescription = "360p",
+            status = DownloadStatus.COMPLETED,
+            filePath = nonExistentPath,
+            contentUri = null
+        )
+        repository.insertTask(task)
+
+        // Verify task is initially recorded as COMPLETED
+        val initial = repository.getTaskByIdSync("missing_file_task")
+        assertEquals(DownloadStatus.COMPLETED, initial?.status)
+
+        val queueManager = com.example.downloader.queue.DownloadQueueManager(
+            context = context,
+            repository = repository
+        )
+        queueManager.verifyDatabaseConsistency()
+
+        // Consistency check should update missing file task status to FAILED
+        val updated = repository.getTaskByIdSync("missing_file_task")
+        assertEquals(DownloadStatus.FAILED, updated?.status)
+        assertNotNull(updated?.errorMessage)
+        assertTrue(updated?.errorMessage?.contains("missing", ignoreCase = true) == true)
+    }
+
+    @Test
+    fun testPausePreservesProgressAndTaskState() = runBlocking {
+        val queueManager = com.example.downloader.queue.DownloadQueueManager(
+            context = context,
+            repository = repository
+        )
+        // Give background initialization job a moment to complete startup recovery
+        kotlinx.coroutines.delay(100)
+
+        val task = DownloadTaskEntity(
+            id = "pause_test_task",
+            url = "https://youtube.com/watch?v=pause_test",
+            title = "Pause Test Video",
+            formatId = "18",
+            formatDescription = "360p",
+            status = DownloadStatus.DOWNLOADING,
+            progress = 45.5f,
+            downloadSpeed = "1.5 MB/s",
+            downloadedSize = "15 MB",
+            totalSize = "33 MB"
+        )
+        repository.insertTask(task)
+
+        queueManager.pauseDownload("pause_test_task")
+
+        // Wait brief moment for coroutine
+        kotlinx.coroutines.delay(200)
+
+        val pausedTask = repository.getTaskByIdSync("pause_test_task")
+        assertEquals(DownloadStatus.PAUSED, pausedTask?.status)
+        assertEquals(45.5f, pausedTask?.progress ?: 0f, 0.01f)
+        assertEquals("", pausedTask?.downloadSpeed)
+        assertEquals("15 MB", pausedTask?.downloadedSize)
+    }
 }

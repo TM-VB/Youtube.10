@@ -49,7 +49,7 @@ class YtDlpEngineBridge(private val context: Context) : VideoExtractor, Download
             )
         }
 
-        YtDlpEngine.extractInfo(url, processId)
+        YtDlpEngine.extractInfo(url, processId, context)
     }
 
     override suspend fun getFormats(url: String, processId: String?): Result<List<FormatInfo>> = withContext(Dispatchers.IO) {

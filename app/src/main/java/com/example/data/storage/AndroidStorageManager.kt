@@ -36,7 +36,13 @@ class AndroidStorageManager(private val context: Context) : StorageManager {
         mimeType: String
     ): Result<Uri> = withContext(Dispatchers.IO) {
         try {
-            val (uri, _) = MediaStoreHelper.saveToPublicDownloads(context, tempFile, displayName)
+            val (uri, _) = MediaStoreHelper.saveToPublicDownloads(
+                context = context,
+                sourceFile = tempFile,
+                rawTitle = displayName,
+                customDisplayName = displayName,
+                customMimeType = mimeType
+            )
             if (uri != null) {
                 if (tempFile.exists()) {
                     tempFile.delete()

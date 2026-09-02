@@ -40,6 +40,9 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+
       - name: Build Debug & Release APKs
         run: ./gradlew assembleDebug assembleRelease bundleRelease --stacktrace --no-daemon -Dkotlin.compiler.execution.strategy=in-process -Dksp.use.ksp2=true
 

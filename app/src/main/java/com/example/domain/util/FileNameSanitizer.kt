@@ -25,11 +25,11 @@ object FileNameSanitizer {
             sanitizedTitle = "media_$sanitizedTitle"
         }
 
-        // Multi-byte UTF-8 safe truncation (max 180 bytes for title stem to leave room for extension)
+        // Multi-byte UTF-8 safe truncation (max 120 bytes for title stem to leave room for extension, total <= 125 chars)
         var finalTitle = if (sanitizedTitle.isBlank()) {
             "video_${System.currentTimeMillis()}"
         } else {
-            truncateUtf8ToMaxBytes(sanitizedTitle, 180)
+            truncateUtf8ToMaxBytes(sanitizedTitle, 120)
         }
 
         // Re-check trailing characters after truncation

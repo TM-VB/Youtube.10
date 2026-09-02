@@ -40,11 +40,14 @@ data class DownloadRequest(
             isAudioOnly -> {
                 if (trimmed.isNotBlank() && trimmed != "best") trimmed else "bestaudio/best"
             }
+            isVideoOnly -> {
+                if (trimmed.isNotBlank() && trimmed != "best") trimmed else "bestvideo/best"
+            }
             trimmed.contains("+") || trimmed.contains("/") || trimmed.equals("best", ignoreCase = true) -> {
                 trimmed
             }
-            isVideoOnly || trimmed.all { it.isDigit() } -> {
-                // If it's a numeric format ID for video only, combine with bestaudio
+            trimmed.all { it.isDigit() } -> {
+                // If it's a numeric format ID for video only, combine with bestaudio unless video-only was requested
                 "$trimmed+bestaudio/best"
             }
             else -> {

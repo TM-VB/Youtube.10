@@ -108,9 +108,10 @@ class DownloadQueueManager(
                     }
                 }
 
-                if (!exists && task.errorMessage == null) {
+                if (!exists) {
                     repository.updateTask(
                         task.copy(
+                            status = DownloadStatus.FAILED,
                             errorMessage = "File missing from disk or was moved."
                         )
                     )
@@ -222,7 +223,7 @@ class DownloadQueueManager(
         }
     }
 
-    private suspend fun cancelDownloadInternal(taskId: String) {
+    private suspend fun cancelDownloadInternal(taskId: String, cleanupFiles: Boolean = true) {
         try {
             downloadEngine.cancel(taskId)
         } catch (_: Throwable) {}
@@ -237,12 +238,15 @@ class DownloadQueueManager(
         lastReportedProgress.remove(taskId)
         lastNotificationTimes.remove(taskId)
         _activeDownloadCount.value = activeJobs.size
-        CleanupManager.cleanupTaskFiles(context, taskId)
+        if (cleanupFiles) {
+            CleanupManager.cleanupTaskFiles(context, taskId)
+        }
     }
 
     fun pauseDownload(taskId: String) {
         scope.launch {
-            cancelDownloadInternal(taskId)
+            // Keep .part files intact so that resume (-c) works without re-downloading from 0%
+            cancelDownloadInternal(taskId, cleanupFiles = false)
 
             val current = repository.getTaskByIdSync(taskId)
             if (current != null && (current.status == DownloadStatus.DOWNLOADING ||
@@ -269,10 +273,13 @@ class DownloadQueueManager(
         scope.launch {
             val current = repository.getTaskByIdSync(taskId) ?: return@launch
             if (current.status == DownloadStatus.PAUSED || current.status == DownloadStatus.INTERRUPTED) {
-                // If temporary download directory has files and we were in processing, attempt direct recovery
+                // If temporary download directory has complete media files (not just .part), check if processing can resume
                 val taskWorkDir = File(context.cacheDir, "ytdlp_downloads/$taskId")
-                val files = taskWorkDir.listFiles()?.filter { it.isFile && it.length() > 0 } ?: emptyList()
-                val isProcessRecoverable = files.isNotEmpty() && current.status == DownloadStatus.PROCESSING_FFMPEG
+                val files = taskWorkDir.listFiles()?.filter { 
+                    it.isFile && it.length() > 1024L && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") 
+                } ?: emptyList()
+                // A task paused/interrupted that has non-part media files was in the processing/merging stage
+                val isProcessRecoverable = files.isNotEmpty()
 
                 val targetStatus = if (isProcessRecoverable) DownloadStatus.PROCESSING_FFMPEG else DownloadStatus.QUEUED
 
@@ -534,23 +541,29 @@ class DownloadQueueManager(
         result.fold(
             onSuccess = { finalFile ->
                 val (uri, savedPath) = MediaStoreHelper.saveToPublicDownloads(context, finalFile, task.title)
+                if (uri == null || savedPath.isNullOrBlank()) {
+                    // MediaStore / public storage save failed; do NOT mark COMPLETED
+                    val storageFailure = DownloadError.StorageError(
+                        msg = "Failed to save downloaded file to device storage.",
+                        detail = "MediaStore insert or file copy failed."
+                    )
+                    handleDownloadFailure(taskId, task, storageFailure)
+                    return@fold
+                }
+
                 if (finalFile.exists() && savedPath != finalFile.absolutePath) {
                     finalFile.delete()
                 }
 
                 val current = repository.getTaskByIdSync(taskId)
-                val finalFileSize = if (!savedPath.isNullOrBlank()) {
-                    val f = File(savedPath)
-                    if (f.exists()) CleanupManager.formatFileSize(f.length()) else ""
-                } else if (finalFile.exists()) {
-                    CleanupManager.formatFileSize(finalFile.length())
-                } else ""
+                val f = File(savedPath)
+                val finalFileSize = if (f.exists()) CleanupManager.formatFileSize(f.length()) else ""
 
                 val completedTask = current?.copy(
                     status = DownloadStatus.COMPLETED,
                     progress = 100f,
-                    contentUri = uri?.toString(),
-                    filePath = savedPath ?: finalFile.absolutePath,
+                    contentUri = uri.toString(),
+                    filePath = savedPath,
                     downloadSpeed = "",
                     eta = "",
                     downloadedSize = if (current.downloadedSize.isNotBlank()) current.downloadedSize else finalFileSize,
@@ -560,7 +573,7 @@ class DownloadQueueManager(
                 if (completedTask != null) {
                     repository.updateTask(completedTask)
                 }
-                DownloadForegroundService.onTaskCompleted(context, taskId, task.title, uri?.toString())
+                DownloadForegroundService.onTaskCompleted(context, taskId, task.title, uri.toString())
             },
             onFailure = { error ->
                 handleDownloadFailure(taskId, task, error)

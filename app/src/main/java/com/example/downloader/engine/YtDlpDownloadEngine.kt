@@ -1,6 +1,7 @@
 package com.example.downloader.engine
 
 import android.content.Context
+import android.os.Environment
 import android.os.StatFs
 import com.example.domain.model.CutMode
 import com.example.domain.model.DownloadError
@@ -112,16 +113,17 @@ class YtDlpDownloadEngine(
                     mediaExtensions.contains(it.extension.lowercase())
             } ?: emptyList()
 
-            var finalFile = downloadedFiles.maxByOrNull { it.lastModified() }
-
             // If separate unmerged video and audio streams exist, merge them with FFmpeg
+            var finalFile: File? = null
             if (!request.isAudioOnly && downloadedFiles.size > 1) {
-                val hasCompletedCombinedVideo = downloadedFiles.any {
+                val completedCombinedVideo = downloadedFiles.firstOrNull {
                     val ext = it.extension.lowercase()
                     (ext == "mp4" || ext == "mkv") && !it.name.contains(".f") && it.length() > 1024L
                 }
 
-                if (!hasCompletedCombinedVideo) {
+                if (completedCombinedVideo != null) {
+                    finalFile = completedCombinedVideo
+                } else {
                     val videoCandidates = downloadedFiles.filter {
                         val ext = it.extension.lowercase()
                         ext == "mp4" || ext == "webm" || ext == "mkv"
@@ -141,10 +143,21 @@ class YtDlpDownloadEngine(
                             val mergeResult = ffmpegMgr.mergeVideoAudio(primaryVideo, primaryAudio, mergedOut)
                             if (mergeResult.isSuccess && mergedOut.exists() && mergedOut.length() > 0) {
                                 finalFile = mergedOut
+                                // Clean up intermediate unmerged parts
+                                try { primaryVideo.delete() } catch (_: Throwable) {}
+                                try { primaryAudio.delete() } catch (_: Throwable) {}
                             }
                         } catch (_: Throwable) {}
                     }
                 }
+            }
+
+            if (finalFile == null) {
+                // Heuristic: prefer non-fragment combined media file, largest file size
+                finalFile = downloadedFiles
+                    .filter { !it.name.contains(".f") }
+                    .maxByOrNull { it.length() }
+                    ?: downloadedFiles.maxByOrNull { it.length() }
             }
 
             if (finalFile == null || !finalFile.exists() || finalFile.length() == 0L) {
@@ -317,9 +330,14 @@ class YtDlpDownloadEngine(
 
     private fun hasAvailableStorage(context: Context, requiredBytes: Long): Boolean {
         return try {
-            val stat = StatFs(context.cacheDir.path)
-            val available = stat.availableBlocksLong * stat.blockSizeLong
-            available >= requiredBytes
+            val cacheStat = StatFs(context.cacheDir.path)
+            val cacheAvail = cacheStat.availableBlocksLong * cacheStat.blockSizeLong
+
+            val targetDir = Environment.getExternalStorageDirectory()
+            val targetStat = if (targetDir != null && targetDir.exists()) StatFs(targetDir.path) else cacheStat
+            val targetAvail = targetStat.availableBlocksLong * targetStat.blockSizeLong
+
+            cacheAvail >= requiredBytes && targetAvail >= requiredBytes
         } catch (e: Exception) {
             true
         }
