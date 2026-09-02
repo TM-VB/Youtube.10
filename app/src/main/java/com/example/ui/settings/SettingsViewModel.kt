@@ -127,7 +127,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     _statusMessage.value = "yt-dlp update result: $status"
                 },
                 onFailure = { e ->
-                    _statusMessage.value = "yt-dlp status: Up to date or (${e.message ?: "Current"})"
+                    YtDlpLogger.logError("Settings", "Failed to update yt-dlp engine", e)
+                    _statusMessage.value = "yt-dlp update failed: ${e.localizedMessage ?: "Check network connection"}"
                 }
             )
             _isUpdating.value = false

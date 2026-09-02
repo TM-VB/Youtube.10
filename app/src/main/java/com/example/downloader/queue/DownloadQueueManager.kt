@@ -12,6 +12,7 @@ import com.example.domain.model.DownloadRequest
 import com.example.domain.model.DownloadStatus
 import com.example.domain.model.TimeRange
 import com.example.downloader.cleanup.CleanupManager
+import com.example.downloader.engine.DownloadEngine
 import com.example.downloader.engine.YtDlpDownloadEngine
 import com.example.downloader.ffmpeg.FFmpegManager
 import com.example.downloader.network.NetworkMonitor
@@ -46,7 +47,7 @@ class DownloadQueueManager(
     private val repository: DownloadRepository = DownloadRepository(AppDatabase.getInstance(context).downloadTaskDao()),
     private val appSettings: AppSettings = AppSettings.getInstance(context),
     private val networkMonitor: NetworkMonitor = NetworkMonitor(context),
-    private val downloadEngine: YtDlpDownloadEngine = YtDlpDownloadEngine(context, FFmpegManager(context)),
+    private val downloadEngine: DownloadEngine = YtDlpDownloadEngine(context, FFmpegManager(context)),
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 ) {
 
@@ -221,14 +222,27 @@ class DownloadQueueManager(
         }
     }
 
+    private suspend fun cancelDownloadInternal(taskId: String) {
+        try {
+            downloadEngine.cancel(taskId)
+        } catch (_: Throwable) {}
+        try {
+            YtDlpEngine.cancel(taskId)
+        } catch (_: Throwable) {}
+        val job = activeJobs.remove(taskId)
+        job?.cancel()
+        job?.join()
+        speedSmoothers.remove(taskId)
+        lastProgressUpdateTimes.remove(taskId)
+        lastReportedProgress.remove(taskId)
+        lastNotificationTimes.remove(taskId)
+        _activeDownloadCount.value = activeJobs.size
+        CleanupManager.cleanupTaskFiles(context, taskId)
+    }
+
     fun pauseDownload(taskId: String) {
         scope.launch {
-            YtDlpEngine.cancel(taskId)
-            downloadEngine.cancel(taskId)
-            activeJobs[taskId]?.cancel()
-            activeJobs.remove(taskId)
-            speedSmoothers.remove(taskId)
-            _activeDownloadCount.value = activeJobs.size
+            cancelDownloadInternal(taskId)
 
             val current = repository.getTaskByIdSync(taskId)
             if (current != null && (current.status == DownloadStatus.DOWNLOADING ||
@@ -276,14 +290,7 @@ class DownloadQueueManager(
 
     fun cancelDownload(taskId: String) {
         scope.launch {
-            YtDlpEngine.cancel(taskId)
-            downloadEngine.cancel(taskId)
-            activeJobs[taskId]?.cancel()
-            activeJobs.remove(taskId)
-            speedSmoothers.remove(taskId)
-            _activeDownloadCount.value = activeJobs.size
-
-            CleanupManager.cleanupTaskFiles(context, taskId)
+            cancelDownloadInternal(taskId)
 
             val task = repository.getTaskByIdSync(taskId)
             if (task != null && task.status != DownloadStatus.COMPLETED) {
@@ -338,9 +345,13 @@ class DownloadQueueManager(
     }
 
     fun deleteDownload(taskId: String) {
-        cancelDownload(taskId)
         scope.launch {
+            cancelDownloadInternal(taskId)
+            DownloadForegroundService.updateOrDismissIfIdle(
+                context, taskId, "", DownloadStatus.CANCELLED, 0, ""
+            )
             repository.deleteTask(taskId)
+            processQueue()
         }
     }
 
@@ -387,8 +398,14 @@ class DownloadQueueManager(
 
     fun bulkDelete(taskIds: List<String>) {
         scope.launch {
-            taskIds.forEach { cancelDownload(it) }
+            for (id in taskIds) {
+                cancelDownloadInternal(id)
+                DownloadForegroundService.updateOrDismissIfIdle(
+                    context, id, "", DownloadStatus.CANCELLED, 0, ""
+                )
+            }
             repository.deleteTasksByIds(taskIds)
+            processQueue()
         }
     }
 
@@ -475,23 +492,36 @@ class DownloadQueueManager(
         repository.updateTask(task.copy(status = DownloadStatus.DOWNLOADING))
         DownloadForegroundService.startOrUpdate(context, taskId, task.title, task.progress.toInt(), DownloadStatus.DOWNLOADING, "")
 
-        val timeRange = if (!task.startTime.isNullOrBlank() && !task.endTime.isNullOrBlank()) {
-            val cutMode = if (task.cutMode.equals("precise", ignoreCase = true)) CutMode.PRECISE_CUT else CutMode.FAST_CUT
-            TimeRange(task.startTime, task.endTime, cutMode)
-        } else null
+        val cutMode = if (task.cutMode.equals("precise", ignoreCase = true)) CutMode.PRECISE_CUT else CutMode.FAST_CUT
+        val request = DownloadRequest(
+            id = task.id,
+            url = task.url,
+            formatSelector = task.formatId,
+            startTime = task.startTime,
+            endTime = task.endTime,
+            cutMode = cutMode,
+            title = task.title,
+            thumbnailUrl = task.thumbnailUrl,
+            formatDescription = task.formatDescription,
+            isAudioOnly = task.isAudioOnly,
+            isVideoOnly = task.isVideoOnly,
+            downloadSubtitles = task.downloadSubtitles,
+            subtitleLanguage = task.subtitleLanguage
+        )
 
         val smoother = speedSmoothers.getOrPut(taskId) { SpeedSmoother() }
 
-        val result = YtDlpEngine.download(
-            context = context,
-            url = task.url,
-            title = task.title,
-            formatId = task.formatId,
-            isAudioOnly = task.isAudioOnly,
-            timeRange = timeRange,
-            processId = taskId
-        ) { progressUpdate ->
-            handleProgressUpdate(taskId, task.title, progressUpdate, smoother)
+        val result = downloadEngine.download(request) { progress ->
+            handleProgressUpdate(
+                taskId = taskId,
+                title = task.title,
+                progress = progress.progressPercentage,
+                speed = progress.speed,
+                eta = progress.eta,
+                downloadedBytes = progress.downloadedBytes,
+                totalBytes = progress.totalBytes,
+                smoother = smoother
+            )
         }
 
         activeJobs.remove(taskId)
@@ -502,18 +532,25 @@ class DownloadQueueManager(
         _activeDownloadCount.value = activeJobs.size
 
         result.fold(
-            onSuccess = { (uri, path) ->
+            onSuccess = { finalFile ->
+                val (uri, savedPath) = MediaStoreHelper.saveToPublicDownloads(context, finalFile, task.title)
+                if (finalFile.exists() && savedPath != finalFile.absolutePath) {
+                    finalFile.delete()
+                }
+
                 val current = repository.getTaskByIdSync(taskId)
-                val finalFileSize = if (!path.isNullOrBlank()) {
-                    val f = File(path)
+                val finalFileSize = if (!savedPath.isNullOrBlank()) {
+                    val f = File(savedPath)
                     if (f.exists()) CleanupManager.formatFileSize(f.length()) else ""
+                } else if (finalFile.exists()) {
+                    CleanupManager.formatFileSize(finalFile.length())
                 } else ""
 
                 val completedTask = current?.copy(
                     status = DownloadStatus.COMPLETED,
                     progress = 100f,
                     contentUri = uri?.toString(),
-                    filePath = path,
+                    filePath = savedPath ?: finalFile.absolutePath,
                     downloadSpeed = "",
                     eta = "",
                     downloadedSize = if (current.downloadedSize.isNotBlank()) current.downloadedSize else finalFileSize,
@@ -580,56 +617,50 @@ class DownloadQueueManager(
     private fun handleProgressUpdate(
         taskId: String,
         title: String,
-        progressUpdate: ProgressUpdate,
+        progress: Float,
+        speed: String,
+        eta: String,
+        downloadedBytes: Long,
+        totalBytes: Long,
         smoother: SpeedSmoother
     ) {
         val now = System.currentTimeMillis()
         val lastTime = lastProgressUpdateTimes[taskId] ?: 0L
         val lastProg = lastReportedProgress[taskId] ?: 0f
-        val progressDelta = Math.abs(progressUpdate.progress - lastProg)
+        val progressDelta = Math.abs(progress - lastProg)
 
-        // Throttle updates: write to DB only if progress jumps by >= 0.5%, reaches 100%, or at least 400ms have elapsed
-        val isSignificant = progressDelta >= 0.5f || progressUpdate.progress >= 100f || (now - lastTime >= 400L)
+        val isSignificant = progressDelta >= 0.5f || progress >= 100f || (now - lastTime >= 400L)
         if (!isSignificant) {
             return
         }
 
         lastProgressUpdateTimes[taskId] = now
-        lastReportedProgress[taskId] = progressUpdate.progress
+        lastReportedProgress[taskId] = progress
+
+        val speedText = speed
+        val downloadedText = if (downloadedBytes > 0) CleanupManager.formatFileSize(downloadedBytes) else ""
+        val totalText = if (totalBytes > 0) CleanupManager.formatFileSize(totalBytes) else ""
 
         scope.launch {
-            val isFfmpeg = progressUpdate.rawLine.contains("[Merger]", ignoreCase = true) ||
-                    progressUpdate.rawLine.contains("[ExtractAudio]", ignoreCase = true) ||
-                    progressUpdate.rawLine.contains("[ffmpeg]", ignoreCase = true) ||
-                    progressUpdate.rawLine.contains("[Fixup", ignoreCase = true)
-
-            val status = if (isFfmpeg) DownloadStatus.PROCESSING_FFMPEG else DownloadStatus.DOWNLOADING
-            val speedText = progressUpdate.speedText
-            val etaFormatted = if (progressUpdate.etaSeconds > 0) {
-                SpeedSmoother.formatEta(progressUpdate.etaSeconds)
-            } else ""
-
-            // High-performance direct SQL update: updates only progress columns without touching entire entity
             repository.updateProgress(
                 id = taskId,
-                status = status,
-                progress = progressUpdate.progress,
+                status = DownloadStatus.DOWNLOADING,
+                progress = progress,
                 downloadSpeed = speedText,
-                eta = etaFormatted,
-                downloadedSize = progressUpdate.downloadedBytesText,
-                totalSize = progressUpdate.totalBytesText
+                eta = eta,
+                downloadedSize = downloadedText,
+                totalSize = totalText
             )
 
-            // Throttle foreground service notifications: update at most once per 1000ms per task or when complete
             val lastNotif = lastNotificationTimes[taskId] ?: 0L
-            if (now - lastNotif >= 1000L || progressUpdate.progress >= 100f) {
+            if (now - lastNotif >= 1000L || progress >= 100f) {
                 lastNotificationTimes[taskId] = now
                 DownloadForegroundService.startOrUpdate(
                     context = context,
                     taskId = taskId,
                     title = title,
-                    progress = progressUpdate.progress.toInt(),
-                    status = status,
+                    progress = progress.toInt(),
+                    status = DownloadStatus.DOWNLOADING,
                     speed = speedText
                 )
             }

@@ -36,67 +36,15 @@ class AndroidStorageManager(private val context: Context) : StorageManager {
         mimeType: String
     ): Result<Uri> = withContext(Dispatchers.IO) {
         try {
-            val extension = tempFile.extension.ifEmpty { "mp4" }
-            val sanitizedName = FileNameSanitizer.sanitize(displayName, extension)
-
-            val resolver = context.contentResolver
-            val isVideo = mimeType.startsWith("video/")
-            val targetDir = if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_DOWNLOADS
-
-            val contentValues = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, sanitizedName)
-                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(
-                        MediaStore.MediaColumns.RELATIVE_PATH,
-                        "$targetDir/DownloadVideos"
-                    )
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+            val (uri, _) = MediaStoreHelper.saveToPublicDownloads(context, tempFile, displayName)
+            if (uri != null) {
+                if (tempFile.exists()) {
+                    tempFile.delete()
                 }
-                if (isVideo) {
-                    put(MediaStore.Video.Media.TITLE, displayName)
-                }
-            }
-
-            val collectionUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                if (isVideo) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                else MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                Result.success(uri)
             } else {
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                Result.failure(Exception("Failed to persist media file to MediaStore"))
             }
-
-            val itemUri = resolver.insert(collectionUri, contentValues)
-                ?: return@withContext Result.failure(Exception("Failed to insert MediaStore item"))
-
-            resolver.openOutputStream(itemUri)?.use { outputStream ->
-                FileInputStream(tempFile).use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            } ?: return@withContext Result.failure(Exception("Failed to open output stream for $itemUri"))
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentValues.clear()
-                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                resolver.update(itemUri, contentValues, null, null)
-            }
-
-            // Notify media scanner
-            try {
-                val publicPath = "${Environment.getExternalStoragePublicDirectory(targetDir)}/DownloadVideos/$sanitizedName"
-                android.media.MediaScannerConnection.scanFile(
-                    context.applicationContext,
-                    arrayOf(publicPath),
-                    arrayOf(mimeType),
-                    null
-                )
-            } catch (_: Exception) {}
-
-            // Cleanup temp file after successful persist
-            if (tempFile.exists()) {
-                tempFile.delete()
-            }
-
-            Result.success(itemUri)
         } catch (e: Exception) {
             Result.failure(e)
         }

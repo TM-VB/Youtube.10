@@ -25,7 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "download_videos_db"
-                ).fallbackToDestructiveMigration(dropAllTables = true).build()
+                ).build()
                 INSTANCE = instance
                 instance
             }

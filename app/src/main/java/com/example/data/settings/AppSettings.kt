@@ -46,9 +46,33 @@ class AppSettings private constructor(context: Context) {
     val languageCode: StateFlow<String> = _languageCode.asStateFlow()
 
     private val _cookiesContent = MutableStateFlow(
-        prefs.getString(KEY_COOKIES_CONTENT, "") ?: ""
+        loadInitialCookies()
     )
     val cookiesContent: StateFlow<String> = _cookiesContent.asStateFlow()
+
+    private fun loadInitialCookies(): String {
+        val encrypted = prefs.getString(KEY_ENCRYPTED_COOKIES, null)
+        if (!encrypted.isNullOrBlank()) {
+            val decrypted = CookieSecurityManager.decrypt(encrypted)
+            if (decrypted != null) {
+                return decrypted
+            }
+        }
+
+        // Migration from legacy plaintext cookies
+        val legacyPlaintext = prefs.getString(KEY_COOKIES_CONTENT, null)
+        if (!legacyPlaintext.isNullOrBlank()) {
+            val newlyEncrypted = CookieSecurityManager.encrypt(legacyPlaintext)
+            if (newlyEncrypted != null) {
+                prefs.edit()
+                    .putString(KEY_ENCRYPTED_COOKIES, newlyEncrypted)
+                    .remove(KEY_COOKIES_CONTENT)
+                    .apply()
+                return legacyPlaintext
+            }
+        }
+        return ""
+    }
 
     private val _autoCheckEngineUpdates = MutableStateFlow(
         prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true)
@@ -65,13 +89,32 @@ class AppSettings private constructor(context: Context) {
     )
     val defaultSubtitleLang: StateFlow<String> = _defaultSubtitleLang.asStateFlow()
 
-    fun setCookiesContent(content: String) {
-        prefs.edit().putString(KEY_COOKIES_CONTENT, content).apply()
-        _cookiesContent.value = content
+    fun setCookiesContent(content: String): Boolean {
+        if (content.isBlank()) {
+            clearCookies()
+            return true
+        }
+
+        val encrypted = CookieSecurityManager.encrypt(content)
+        return if (encrypted != null) {
+            prefs.edit()
+                .putString(KEY_ENCRYPTED_COOKIES, encrypted)
+                .remove(KEY_COOKIES_CONTENT)
+                .apply()
+            _cookiesContent.value = content
+            true
+        } else {
+            // NEVER store plaintext if encryption fails
+            android.util.Log.e("AppSettings", "Cookie encryption failed. Content was not saved to protect credentials.")
+            false
+        }
     }
 
     fun clearCookies() {
-        prefs.edit().remove(KEY_COOKIES_CONTENT).apply()
+        prefs.edit()
+            .remove(KEY_ENCRYPTED_COOKIES)
+            .remove(KEY_COOKIES_CONTENT)
+            .apply()
         _cookiesContent.value = ""
     }
 
@@ -128,6 +171,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_THEME_MODE = "key_theme_mode"
         private const val KEY_LANGUAGE_CODE = "key_language_code"
         private const val KEY_COOKIES_CONTENT = "key_cookies_content"
+        private const val KEY_ENCRYPTED_COOKIES = "key_encrypted_cookies"
         private const val KEY_AUTO_CHECK_UPDATES = "key_auto_check_updates"
         private const val KEY_DEFAULT_SUBTITLES = "key_default_subtitles"
         private const val KEY_DEFAULT_SUBTITLE_LANG = "key_default_subtitle_lang"

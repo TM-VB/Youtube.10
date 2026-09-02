@@ -62,8 +62,15 @@ class YtDlpDownloadEngine(
 
         YtDlpLogger.logDownloadStarted(taskId, request.url, request.resolveFormatSelector())
 
+        var cookiesFile: File? = null
         try {
-            val ytdlRequest = buildYoutubeDLRequest(workDir, request)
+            val cookiesContent = com.example.data.settings.AppSettings.getInstance(context).cookiesContent.value
+            if (cookiesContent.isNotBlank()) {
+                cookiesFile = File(context.cacheDir, "yt_cookies_${taskId}.txt")
+                cookiesFile.writeText(cookiesContent)
+            }
+
+            val ytdlRequest = buildYoutubeDLRequest(workDir, request, cookiesFile)
 
             YoutubeDL.getInstance().execute(ytdlRequest, taskId) { progress, etaInSeconds, line ->
                 val rawLine = line.orEmpty()
@@ -98,9 +105,11 @@ class YtDlpDownloadEngine(
                 onProgress(progressObj)
             }
 
-            // 3. Locate final completed file
+            // 3. Locate final completed media file (exclude subtitles, metadata, thumbnails, parts)
+            val mediaExtensions = setOf("mp4", "mkv", "webm", "mp3", "m4a", "opus", "ogg", "wav", "flac", "aac", "3gp")
             val downloadedFiles = workDir.listFiles()?.filter {
-                it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl")
+                it.isFile && !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") &&
+                    mediaExtensions.contains(it.extension.lowercase())
             } ?: emptyList()
 
             var finalFile = downloadedFiles.maxByOrNull { it.lastModified() }
@@ -163,6 +172,8 @@ class YtDlpDownloadEngine(
             val domainError = YtDlpErrorMapper.map(e)
             YtDlpLogger.logDownloadError(taskId, domainError, System.currentTimeMillis() - startTimeMs)
             Result.failure(domainError)
+        } finally {
+            cookiesFile?.delete()
         }
     }
 
@@ -197,7 +208,7 @@ class YtDlpDownloadEngine(
         }
     }
 
-    fun buildYoutubeDLRequest(workDir: File, request: DownloadRequest): YoutubeDLRequest {
+    fun buildYoutubeDLRequest(workDir: File, request: DownloadRequest, cookiesFile: File? = null): YoutubeDLRequest {
         val outputPattern = "${workDir.absolutePath}/%(title)s.%(ext)s"
         val req = YoutubeDLRequest(request.url.trim())
 
@@ -209,7 +220,6 @@ class YtDlpDownloadEngine(
         req.addOption("--no-warnings")
         req.addOption("--socket-timeout", "30")
         req.addOption("--geo-bypass")
-        req.addOption("--no-check-certificates")
         req.addOption("--retries", "10")
         req.addOption("--fragment-retries", "10")
         req.addOption("--retry-sleep", "1")
@@ -224,15 +234,10 @@ class YtDlpDownloadEngine(
             }
         } catch (_: Throwable) {}
 
-        // Apply Cookies if configured
-        try {
-            val cookiesContent = com.example.data.settings.AppSettings.getInstance(context).cookiesContent.value
-            if (cookiesContent.isNotBlank()) {
-                val cookiesFile = File(context.cacheDir, "yt_cookies.txt")
-                cookiesFile.writeText(cookiesContent)
-                req.addOption("--cookies", cookiesFile.absolutePath)
-            }
-        } catch (_: Throwable) {}
+        // Apply Cookies if provided
+        if (cookiesFile != null && cookiesFile.exists()) {
+            req.addOption("--cookies", cookiesFile.absolutePath)
+        }
 
         // Subtitles handling
         if (request.downloadSubtitles) {
@@ -251,9 +256,14 @@ class YtDlpDownloadEngine(
             req.addOption("-f", formatSelector)
             req.addOption("-x")
             req.addOption("--audio-format", "mp3")
+            req.addOption("--embed-metadata")
         } else {
             req.addOption("-f", formatSelector)
             req.addOption("--merge-output-format", "mp4")
+            req.addOption("--embed-metadata")
+            // Ensure MP4 headers are moved to front (faststart) so duration and seeking work immediately
+            req.addOption("--ppa", "Merger+ffmpeg_o:-movflags +faststart")
+            req.addOption("--ppa", "Fixup+ffmpeg_o:-movflags +faststart")
         }
 
         // Cutting / Trimming sections
@@ -261,10 +271,8 @@ class YtDlpDownloadEngine(
             val start = request.startTime!!.trim()
             val end = request.endTime!!.trim()
             req.addOption("--download-sections", "*$start-$end")
-
-            if (request.cutMode == CutMode.PRECISE_CUT) {
-                req.addOption("--force-keyframes-at-cuts")
-            }
+            req.addOption("--force-keyframes-at-cuts")
+            req.addOption("--ppa", "ModifyChapters+ffmpeg_o:-movflags +faststart")
         }
 
         return req

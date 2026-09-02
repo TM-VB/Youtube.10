@@ -32,10 +32,7 @@ class DownloadForegroundService : Service() {
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
 
         val appSettings = AppSettings.getInstance(this)
-        if (!appSettings.showNotifications.value && action != ACTION_CANCEL && action != ACTION_PAUSE && action != ACTION_RESUME) {
-            stopForegroundIfIdle()
-            return START_NOT_STICKY
-        }
+        val userWantsNotifications = appSettings.showNotifications.value
 
         when (action) {
             ACTION_CANCEL -> {
@@ -77,14 +74,20 @@ class DownloadForegroundService : Service() {
         val errorMessage = intent?.getStringExtra(EXTRA_ERROR_MESSAGE)
 
         if (isFinished) {
-            val completedNotification = buildCompletedNotification(title, contentUriStr)
-            notificationManager.notify(NOTIFICATION_ID_COMPLETED_BASE + (taskId?.hashCode() ?: 0), completedNotification)
+            if (userWantsNotifications) {
+                val completedNotification = buildCompletedNotification(title, contentUriStr)
+                notificationManager.notify(NOTIFICATION_ID_COMPLETED_BASE + (taskId?.hashCode() ?: 0), completedNotification)
+            }
             stopForegroundIfIdle()
         } else if (isFailed) {
-            val failedNotification = buildFailedNotification(title, taskId, errorMessage)
-            notificationManager.notify(NOTIFICATION_ID_FAILED_BASE + (taskId?.hashCode() ?: 0), failedNotification)
+            if (userWantsNotifications) {
+                val failedNotification = buildFailedNotification(title, taskId, errorMessage)
+                notificationManager.notify(NOTIFICATION_ID_FAILED_BASE + (taskId?.hashCode() ?: 0), failedNotification)
+            }
             stopForegroundIfIdle()
         } else {
+            // Android OS requires foreground services to display a notification.
+            // Even if user disabled alert notifications, we must keep a valid ongoing notification to satisfy the OS.
             val notification = buildProgressNotification(title, progress, taskId, status, speed)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
@@ -196,8 +199,10 @@ class DownloadForegroundService : Service() {
 
     private fun buildCompletedNotification(title: String, contentUriStr: String?): android.app.Notification {
         val openIntent = if (!contentUriStr.isNullOrBlank()) {
+            val uri = Uri.parse(contentUriStr)
+            val mimeType = com.example.storage.MediaStoreHelper.resolveMimeType(this, uri, null)
             Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.parse(contentUriStr), "video/*")
+                setDataAndType(uri, mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         } else {

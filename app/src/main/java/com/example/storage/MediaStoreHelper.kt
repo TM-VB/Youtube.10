@@ -47,6 +47,19 @@ object MediaStoreHelper {
     fun isVideoMime(mimeType: String): Boolean = mimeType.startsWith("video/")
     fun isAudioMime(mimeType: String): Boolean = mimeType.startsWith("audio/")
 
+    fun resolveMimeType(context: Context, uri: Uri?, filePath: String?): String {
+        if (uri != null) {
+            try {
+                val resolved = context.contentResolver.getType(uri)
+                if (!resolved.isNullOrBlank()) {
+                    return resolved
+                }
+            } catch (_: Exception) {}
+        }
+        val name = filePath ?: uri?.lastPathSegment.orEmpty()
+        return getMimeType(name)
+    }
+
     /**
      * Copies a completed download file to the public Movies/DownloadVideos or Music/DownloadVideos directory using MediaStore.
      * Triggers MediaScannerConnection so Android Gallery & Music players instantly generate thumbnails and metadata.
@@ -93,32 +106,49 @@ object MediaStoreHelper {
 
                 if (uri != null) {
                     var bytesWritten = 0L
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        FileInputStream(sourceFile).use { input ->
-                            bytesWritten = input.copyTo(out, bufferSize = 64 * 1024)
-                            out.flush()
+                    var copySuccess = false
+
+                    try {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            FileInputStream(sourceFile).use { input ->
+                                bytesWritten = input.copyTo(out, bufferSize = 64 * 1024)
+                                out.flush()
+                            }
                         }
+                        // Verify complete file size was written
+                        if (bytesWritten == sourceFile.length() && bytesWritten > 0L) {
+                            copySuccess = true
+                        }
+                    } catch (copyEx: Exception) {
+                        Log.e(TAG, "Error writing media data to MediaStore uri $uri", copyEx)
                     }
 
-                    values.clear()
-                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    values.put(MediaStore.MediaColumns.SIZE, sourceFile.length())
-                    context.contentResolver.update(uri, values, null, null)
+                    if (copySuccess) {
+                        values.clear()
+                        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        values.put(MediaStore.MediaColumns.SIZE, bytesWritten)
+                        context.contentResolver.update(uri, values, null, null)
 
-                    val publicPath = "${Environment.getExternalStoragePublicDirectory(targetDir)}/DownloadVideos/$displayName"
-                    Log.d(TAG, "Saved to MediaStore: uri=$uri, sourceSize=${sourceFile.length()}, written=$bytesWritten, publicPath=$publicPath")
+                        val publicPath = "${Environment.getExternalStoragePublicDirectory(targetDir)}/DownloadVideos/$displayName"
+                        Log.d(TAG, "Saved to MediaStore: uri=$uri, sourceSize=${sourceFile.length()}, written=$bytesWritten, publicPath=$publicPath")
 
-                    // Scan file with MediaScanner to guarantee Gallery / Photos thumbnail generation
-                    try {
-                        MediaScannerConnection.scanFile(
-                            context.applicationContext,
-                            arrayOf(publicPath),
-                            arrayOf(mimeType),
-                            null
-                        )
-                    } catch (_: Exception) {}
+                        // Scan file with MediaScanner to guarantee Gallery / Photos thumbnail generation
+                        try {
+                            MediaScannerConnection.scanFile(
+                                context.applicationContext,
+                                arrayOf(publicPath),
+                                arrayOf(mimeType),
+                                null
+                            )
+                        } catch (_: Exception) {}
 
-                    return Pair(uri, publicPath)
+                        return Pair(uri, publicPath)
+                    } else {
+                        // Copy failed or size mismatch: delete orphaned pending MediaStore entry
+                        try {
+                            context.contentResolver.delete(uri, null, null)
+                        } catch (_: Exception) {}
+                    }
                 }
             } else {
                 val publicDir = File(
@@ -129,24 +159,38 @@ object MediaStoreHelper {
                     publicDir.mkdirs()
                 }
                 val destFile = File(publicDir, displayName)
+                var bytesWritten = 0L
                 FileInputStream(sourceFile).use { input ->
                     FileOutputStream(destFile).use { output ->
-                        input.copyTo(output, bufferSize = 64 * 1024)
+                        bytesWritten = input.copyTo(output, bufferSize = 64 * 1024)
                         output.flush()
                     }
                 }
-                val uri = Uri.fromFile(destFile)
 
-                try {
-                    MediaScannerConnection.scanFile(
-                        context.applicationContext,
-                        arrayOf(destFile.absolutePath),
-                        arrayOf(mimeType),
-                        null
-                    )
-                } catch (_: Exception) {}
+                if (bytesWritten == sourceFile.length()) {
+                    val uri = try {
+                        FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.provider",
+                            destFile
+                        )
+                    } catch (_: Exception) {
+                        Uri.fromFile(destFile)
+                    }
 
-                return Pair(uri, destFile.absolutePath)
+                    try {
+                        MediaScannerConnection.scanFile(
+                            context.applicationContext,
+                            arrayOf(destFile.absolutePath),
+                            arrayOf(mimeType),
+                            null
+                        )
+                    } catch (_: Exception) {}
+
+                    return Pair(uri, destFile.absolutePath)
+                } else {
+                    destFile.delete()
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -154,7 +198,16 @@ object MediaStoreHelper {
 
         // Fallback: use sourceFile in app cache if valid
         return if (sourceFile.exists() && sourceFile.length() > 512L) {
-            Pair(null, sourceFile.absolutePath)
+            val fallbackUri = try {
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.provider",
+                    sourceFile
+                )
+            } catch (_: Exception) {
+                null
+            }
+            Pair(fallbackUri, sourceFile.absolutePath)
         } else {
             Pair(null, null)
         }
@@ -180,7 +233,7 @@ object MediaStoreHelper {
                 else -> return
             }
 
-            val mimeType = getMimeType(filePath ?: "video.mp4")
+            val mimeType = resolveMimeType(context, uri, filePath)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -214,13 +267,13 @@ object MediaStoreHelper {
                 else -> return
             }
 
-            val mimeType = getMimeType(filePath ?: "video.mp4")
+            val mimeType = resolveMimeType(context, uri, filePath)
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(shareIntent, "Share video").apply {
+            context.startActivity(Intent.createChooser(shareIntent, "Share media").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             })
         } catch (e: Exception) {

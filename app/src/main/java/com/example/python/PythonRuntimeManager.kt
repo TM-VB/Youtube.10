@@ -58,9 +58,14 @@ class PythonRuntimeManager(private val context: Context) {
     }
 
     fun getStatus(): PythonStatus {
+        val ytdlpInit = try {
+            com.yausername.youtubedl_android.YoutubeDL.getInstance() != null
+        } catch (_: Throwable) {
+            false
+        }
         return PythonStatus(
-            isInitialized = isInitialized,
-            version = "3.11 (Embedded)",
+            isInitialized = isInitialized || ytdlpInit,
+            version = "yt-dlp Embedded (youtubedl-android)",
             runtimePath = pythonHome.absolutePath,
             packagesPath = pythonPackagesDir.absolutePath,
             errorMessage = initError
